@@ -1,19 +1,29 @@
 #!/bin/sh
 # Download and verify one fixed release. Stdout contains only the resolved binary path.
 set -eu
-VERSION=${1:?Usage: install.sh <vX.Y.Z> <cache-directory>}
+OFFLINE=0
+if [ "${1:-}" = "--offline" ]; then OFFLINE=1; shift; fi
+VERSION=${1:?Usage: install.sh [--offline] <vX.Y.Z> <cache-directory>}
 CACHE=${2:?cache directory required}
 case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo 'Invalid proto-gen version' >&2; exit 1 ;; esac
 case "$VERSION" in *[!A-Za-z0-9.-]*) echo 'Invalid proto-gen version' >&2; exit 1 ;; esac
 case "$(uname -s)" in Darwin) OS=macos ;; Linux) OS=linux ;; *) echo 'Unsupported proto-gen OS' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) ARCH=aarch64 ;; x86_64|amd64) ARCH=x86_64 ;; *) echo 'Unsupported proto-gen architecture' >&2; exit 1 ;; esac
-mkdir -p "$CACHE/$VERSION"
-CACHE=$(CDPATH= cd -- "$CACHE" && pwd)
+if [ -d "$CACHE" ]; then
+    CACHE=$(CDPATH= cd -- "$CACHE" && pwd)
+fi
 DEST="$CACHE/$VERSION/$OS-$ARCH"
 if [ -x "$DEST/proto-gen" ] && [ -x "$DEST/protoc" ] && [ -x "$DEST/protoc-gen-go" ] && [ "$(cat "$DEST/version.txt" 2>/dev/null || true)" = "$VERSION" ]; then
     printf '%s\n' "$DEST/proto-gen"
     exit 0
 fi
+if [ "$OFFLINE" = 1 ]; then
+    echo "Missing cached proto-gen $VERSION ($OS-$ARCH). Run tools/proto/prepare.sh once, or run install.sh without --offline." >&2
+    exit 1
+fi
+mkdir -p "$CACHE/$VERSION"
+CACHE=$(CDPATH= cd -- "$CACHE" && pwd)
+DEST="$CACHE/$VERSION/$OS-$ARCH"
 PACKAGE="proto-gen-$VERSION-$OS-$ARCH"
 ASSET="$PACKAGE.tar.gz"
 BASE=${PROTO_GEN_RELEASE_BASE_URL:-https://github.com/xcwen/proto-gen/releases/download}

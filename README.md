@@ -13,9 +13,11 @@ GENERATOR=$(sh install.sh v0.1.2 .tools/proto-gen)
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json
 ```
 
-业务仓库的入口按 `proto/proto-gen.version` 下载 GitHub Release，自动选择
+业务仓库先显式执行 `./tools/proto/prepare.sh`，按 `proto/proto-gen.version` 下载 GitHub Release，自动选择
 macOS/Linux x86_64/ARM64，核对 SHA256SUMS 并缓存。缓存命中时无需联网。
-日常生成不需要 Rust/Cargo，也不依赖相邻源码仓库；PROTO_GEN_BIN 可显式覆盖。
+日常生成只读取本地缓存，缓存缺失时直接报错，不访问 GitHub。不需要 Rust/Cargo，
+也不依赖相邻源码仓库；PROTO_GEN_BIN 可显式覆盖。Docker 把项目挂载至 /code 后，
+缓存保留在宿主机项目目录，容器重启或重建不重复下载。
 生成不重启服务，不自动同步远端文档。
 
 ## Release 与工具链

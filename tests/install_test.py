@@ -42,15 +42,20 @@ esac
         sums.append(f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  ./{archive.name}\n')
     (mirror / 'SHA256SUMS').write_text(''.join(sums))
 
-    def run(system='Darwin', arch='arm64', success=True, base=None, version='v0.1.0'):
+    def run(system='Darwin', arch='arm64', success=True, base=None, version='v0.1.0', offline=False):
         env = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ['PATH'],
                    INSTALL_TEST_SYSTEM=system, INSTALL_TEST_ARCH=arch,
                    PROTO_GEN_RELEASE_BASE_URL=base or (work / 'releases').as_uri())
-        result = subprocess.run(['sh', str(ROOT / 'install.sh'), version, str(cache)],
+        result = subprocess.run(['sh', str(ROOT / 'install.sh'), *(['--offline'] if offline else []), version, str(cache)],
                                 env=env, text=True, capture_output=True)
         assert (result.returncode == 0) == success, result.stderr
         return result
 
+    # Missing cache in offline mode must not create directories or start a download.
+    result = run(success=False, offline=True, base='file:///not-present')
+    assert 'Missing cached proto-gen' in result.stderr
+    assert 'Downloading' not in result.stderr
+    assert not cache.exists()
     for system, arch, label in platforms:
         result = run(system, arch)
         executable = Path(result.stdout.strip())
@@ -59,6 +64,7 @@ esac
         assert subprocess.check_output([str(executable), '--version'], text=True).strip() == 'proto-gen 0.1.0'
         # A cached release needs no network, even if the configured mirror is unavailable.
         assert run(system, arch, base='file:///not-present').stdout == result.stdout
+        assert run(system, arch, base='file:///not-present', offline=True).stdout == result.stdout
 
     run(system='Windows', success=False)
     run(arch='mips', success=False)
@@ -67,6 +73,10 @@ esac
     destination = cache / 'v0.1.0' / 'macos-aarch64'
     (destination / 'version.txt').write_text('incomplete')
     previous = (destination / 'proto-gen').read_bytes()
+    offline_result = run(success=False, offline=True, base='file:///not-present')
+    assert 'Missing cached proto-gen' in offline_result.stderr
+    assert 'Downloading' not in offline_result.stderr
+    assert (destination / 'proto-gen').read_bytes() == previous
     (mirror / 'SHA256SUMS').write_text('0' * 64 + '  proto-gen-v0.1.0-macos-aarch64.tar.gz\n')
     result = run(success=False)
     assert 'checksum verification failed' in result.stderr
