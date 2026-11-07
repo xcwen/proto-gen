@@ -119,11 +119,16 @@ fn class_edit(root: &Path, apis: Vec<&crate::compiler::Endpoint>, php: bool) -> 
             append.push_str(&format!("\n    /** {title} */\n    public function {}({proto}\\in $in, {proto}\\out &$out)\n    {{\n        return $this->output_err('自动生成代码，尚未实现');\n    }}\n",a.action));
         } else {
             let iface = format!("{}__{}", a.group.replace('/', "__"), a.controller);
-            imports=format!("import type {{ {iface} as __ProtoArgs }} from '@/gen/proto_def';\nimport type {{ action_ret_t as __ActionResult }} from '@/utils/type_def';\n");
-            ensure!(
-                !source.contains("__ProtoArgs") && !source.contains("__ActionResult"),
-                "controller uses reserved stub import aliases"
-            );
+            let own_imports=format!("import type {{ {iface} as __ProtoArgs }} from '@/gen/proto_def';\nimport type {{ action_ret_t as __ActionResult }} from '@/utils/type_def';\n");
+            if source.contains(&own_imports) {
+                imports.clear();
+            } else {
+                ensure!(
+                    !source.contains("__ProtoArgs") && !source.contains("__ActionResult"),
+                    "controller uses reserved stub import aliases"
+                );
+                imports = own_imports;
+            }
             append.push_str(&format!("\n    async {}(p_args: __ProtoArgs[{}]): Promise<__ActionResult> {{\n        return this.output_err('自动生成代码，尚未实现');\n    }}\n",a.action,serde_json::json!(a.action)));
         }
     }

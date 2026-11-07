@@ -104,6 +104,7 @@ fn typescript(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
     let plugin = cfg.root().join("node_modules/.bin/protoc-gen-ts_proto");
     command(Command::new(protoc()).current_dir(w.stage.path()).arg("-I.").arg(format!("--plugin=protoc-gen-ts_proto={}",plugin.display())).arg(format!("--ts_proto_out={}",dest.display())).arg("--ts_proto_opt=esModuleInterop=true,forceLong=string,outputJsonMethods=true,outputEncodeMethods=false,snakeToCamel=false").args(w.endpoints.iter().map(|a|&a.staged)))?;
     fn fix(dir: &Path) -> Result<()> {
+        let input_identifier = regex::Regex::new(r"\bin\b")?;
         for e in fs::read_dir(dir)? {
             let p = e?.path();
             if p.is_dir() {
@@ -118,9 +119,7 @@ fn typescript(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
                     + "\n";
                 if !p.to_string_lossy().contains("/common/") {
                     if let Some(i) = s.find("createBaseout") {
-                        let head = regex::Regex::new(r"\bin\b")?
-                            .replace_all(&s[..i], "_in")
-                            .into_owned();
+                        let head = input_identifier.replace_all(&s[..i], "_in").into_owned();
                         s = head + &s[i..];
                     }
                 }
@@ -136,7 +135,9 @@ fn typescript(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
     let mut routes = vec![];
     let mut checks = vec![];
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for a in &w.endpoints {
+    let mut ordered: Vec<_> = w.endpoints.iter().collect();
+    ordered.sort_by_key(|a| (a.group.clone(), a.source.to_lowercase().replace('_', "!")));
+    for a in ordered {
         let cls = format!("{}__{}", a.group.replace('/', "__"), a.controller);
         let pv = format!(
             "{}__{}__{}",
@@ -216,7 +217,15 @@ fn go(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
         .trim()
         .to_owned();
     let code = tempfile::tempdir()?;
-    let plugin = root.join(".tools/protoc-gen-go");
+    let local_plugin = root.join(".tools/protoc-gen-go");
+    let plugin = if local_plugin.is_file() {
+        local_plugin
+    } else {
+        std::env::current_exe()?
+            .parent()
+            .context("missing executable directory")?
+            .join("protoc-gen-go")
+    };
     let mut cmd = Command::new(protoc());
     cmd.current_dir(w.stage.path())
         .arg("-I.")

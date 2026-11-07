@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  RUST_TOOLCHAIN: "1.97.0"
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Validate version
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          test "$RELEASE_TAG" = "v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup component add --toolchain "$RUST_TOOLCHAIN" rustfmt clippy
+      - name: Install protoc
+        run: tools/install-protoc.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.4"
+          cache: false
+      - name: Check formatting
+        run: cargo "+$RUST_TOOLCHAIN" fmt --all --check
+      - name: Test
+        run: cargo "+$RUST_TOOLCHAIN" test --locked
+      - name: Clippy
+        run: cargo "+$RUST_TOOLCHAIN" clippy --all-targets --locked -- -D warnings
+      - name: Test download installer
+        run: python3 tests/install_test.py
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: linux-x86_64
+            linux: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: linux-aarch64
+            linux: true
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: macos-x86_64
+            linux: false
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            asset: macos-aarch64
+            linux: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install musl tools
+        if: matrix.linux
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          mkdir -p .cargo
+          printf '[target.%s]\nlinker = "musl-gcc"\n' '${{ matrix.target }}' > .cargo/config.toml
+          compiler_var="CC_$(printf '%s' '${{ matrix.target }}' | tr '-' '_')"
+          printf '%s=musl-gcc\n' "$compiler_var" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup target add --toolchain "$RUST_TOOLCHAIN" '${{ matrix.target }}'
+      - name: Build
+        run: cargo "+$RUST_TOOLCHAIN" build --release --locked --target '${{ matrix.target }}' --bin proto-gen
+      - name: Install protoc
+        run: tools/install-protoc.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.4"
+          cache: false
+      - name: Build Go message plugin
+        shell: bash
+        run: CGO_ENABLED=0 GOBIN="$PWD/dist-tools" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
+      - name: Package and smoke test
+        env:
+          ASSET: ${{ matrix.asset }}
+          TARGET: ${{ matrix.target }}
+        run: tools/package-release.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.asset }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum ./*.tar.gz > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "proto-gen $RELEASE_TAG"
+          fi

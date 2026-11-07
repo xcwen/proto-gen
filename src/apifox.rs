@@ -52,6 +52,7 @@ impl Options {
                     return Ok(None);
                 }
                 "--env" => env = args.next().context("--env 缺少参数")?,
+                "release" | "test" => env = arg,
                 "--dry-run" => dry_run = true,
                 "--" => {
                     inputs.extend(args);
@@ -466,10 +467,38 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
             .find(|a| a.source == rel)
             .with_context(|| format!("未找到 {rel}，请先运行 ./gen_proto.sh"))?;
         let tags = tags(api);
+        let settings: Value = api
+            .metadata
+            .get("CONFIG")
+            .map(|s| serde_json::from_str(s))
+            .transpose()?
+            .unwrap_or_else(|| json!({}));
+        let targets = settings.get("export_targets").and_then(Value::as_array);
+        if let Some(targets) = targets {
+            for t in targets {
+                ensure!(
+                    t.as_str().is_some_and(|n| config
+                        .project_list
+                        .iter()
+                        .any(|p| p.name == n || p.apifox_project_name == n)),
+                    "未配置的导出目标"
+                );
+            }
+        }
         let projects: Vec<_> = config
             .project_list
             .iter()
-            .filter(|p| !p.apifox_token.is_empty() && p.tag_list.iter().any(|t| tags.contains(t)))
+            .filter(|p| {
+                !p.apifox_token.is_empty()
+                    && targets
+                        .map(|ts| {
+                            ts.iter().any(|t| {
+                                t.as_str() == Some(&p.name)
+                                    || t.as_str() == Some(&p.apifox_project_name)
+                            })
+                        })
+                        .unwrap_or_else(|| p.tag_list.iter().any(|t| tags.contains(t)))
+            })
             .collect();
         ensure!(
             !projects.is_empty(),

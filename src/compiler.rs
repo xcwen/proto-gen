@@ -10,6 +10,7 @@ use std::{
 };
 
 pub const SCHEMA: &str = include_str!("../schema/common/api_options.proto");
+const DESCRIPTOR_SCHEMA: &str = include_str!("../include/google/protobuf/descriptor.proto");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -194,6 +195,14 @@ pub fn protoc() -> PathBuf {
     std::env::var_os("PROTOC")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
+            if let Ok(executable) = std::env::current_exe() {
+                if let Some(directory) = executable.parent() {
+                    let sibling = directory.join("protoc");
+                    if sibling.is_file() {
+                        return sibling;
+                    }
+                }
+            }
             let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("toolchain/bin/protoc");
             if bundled.exists() {
                 bundled
@@ -222,8 +231,14 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
     );
     fs::create_dir_all(stage.path().join("common"))?;
     fs::write(stage.path().join("common/api_options.proto"), SCHEMA)?;
+    fs::create_dir_all(stage.path().join("google/protobuf"))?;
+    fs::write(
+        stage.path().join("google/protobuf/descriptor.proto"),
+        DESCRIPTOR_SCHEMA,
+    )?;
     let legacy =
         regex::Regex::new(r"(?m)^\s*//\s*__[A-Z_][A-Z_0-9]*\s*:|^\s*```(?:desc|config|in|out)\b")?;
+    let package_declaration = regex::Regex::new(r"(?m)^[ \t]*package[ \t]+[A-Za-z_]")?;
     for path in files(&source)? {
         let rel = path
             .strip_prefix(&source)?
@@ -246,9 +261,7 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
                 "{rel}: only option (common.api) is supported; migrate legacy metadata first"
             );
             ensure!(
-                regex::Regex::new(r"(?m)^[ \t]*package[ \t]+[A-Za-z_]")?
-                    .find(&crate::code(&text))
-                    .is_none(),
+                package_declaration.find(&crate::code(&text)).is_none(),
                 "{rel}: API package is generated"
             );
             let stem = rel.trim_end_matches(".proto");
@@ -297,7 +310,6 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
     let mut cmd = Command::new(protoc());
     cmd.current_dir(stage.path())
         .arg("-I.")
-        .arg(format!("-I{}/include", env!("CARGO_MANIFEST_DIR")))
         .arg("--include_imports")
         .arg("--include_source_info")
         .arg(format!("--descriptor_set_out={}", descriptor.display()))
@@ -330,7 +342,7 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
             "{}: auth required",
             api.source
         );
-        if ["rust", "go"].contains(&target) {
+        if ["rust", "go", "typescript"].contains(&target) {
             ensure!(
                 api.meta.auth != "PRIVATE",
                 "{}: target does not implement PRIVATE auth",
@@ -467,7 +479,6 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
     let mut cmd = Command::new(protoc());
     cmd.current_dir(stage.path())
         .arg("-I.")
-        .arg(format!("-I{}/include", env!("CARGO_MANIFEST_DIR")))
         .arg("--include_imports")
         .arg("--include_source_info")
         .arg(format!("--descriptor_set_out={}", descriptor.display()))
