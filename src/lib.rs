@@ -97,16 +97,14 @@ pub fn generate_rust(workspace: &compiler::Workspace, source: &Path, output: &Pa
     let built = tempfile::tempdir()?;
     let output = built.path();
     let descriptor = output.join("descriptor.bin");
-    let protos: Vec<_> = workspace
-        .files
-        .values()
-        .map(|p| stage.path().join(p))
-        .collect();
+    use prost::Message;
+    write_changed(&descriptor, &workspace.descriptor)?;
     prost_build::Config::new()
         .out_dir(output)
         .include_file("messages.rs")
-        .file_descriptor_set_path(&descriptor)
-        .compile_protos(&protos, &[stage.path()])?;
+        .compile_fds(prost_types::FileDescriptorSet::decode(
+            workspace.descriptor.as_slice(),
+        )?)?;
     let pool = prost_reflect::DescriptorPool::decode(fs::read(&descriptor)?.as_slice())?;
     let mut generated = String::new();
     let mut routes = BTreeSet::new();

@@ -45,7 +45,7 @@ jobs:
       - name: Check formatting
         run: cargo "+$RUST_TOOLCHAIN" fmt --all --check
       - name: Test
-        run: cargo "+$RUST_TOOLCHAIN" test --locked
+        run: tools/ci-command.sh cargo "+$RUST_TOOLCHAIN" test --locked
       - name: Clippy
         run: cargo "+$RUST_TOOLCHAIN" clippy --all-targets --locked -- -D warnings
       - name: Test download installer
@@ -93,7 +93,7 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup target add --toolchain "$RUST_TOOLCHAIN" '${{ matrix.target }}'
       - name: Build
-        run: cargo "+$RUST_TOOLCHAIN" build --release --locked --target '${{ matrix.target }}' --bin proto-gen
+        run: tools/ci-command.sh cargo "+$RUST_TOOLCHAIN" build --release --locked --target '${{ matrix.target }}' --bin proto-gen
       - name: Install protoc
         run: tools/install-protoc.sh
       - uses: actions/setup-go@v6

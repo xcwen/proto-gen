@@ -178,42 +178,62 @@ fn go_controller_import_aliases_and_existing_methods_are_preserved() {
 }
 #[test]
 fn downloaded_binary_uses_its_bundled_compiler_without_source_paths() {
-    let (d, _) = fixture("php");
-    let bundle = d.path().join("downloaded");
-    fs::create_dir_all(&bundle).unwrap();
-    let executable = bundle.join("proto-gen");
-    fs::copy(env!("CARGO_BIN_EXE_proto-gen"), &executable).unwrap();
-    let marker = bundle.join("compiler-used");
-    let real = compiler::protoc();
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-    put(
-        &bundle,
-        "protoc",
-        &format!(
-            "#!/bin/sh\nprintf used >> {}\nexec {} \"$@\"\n",
-            quote(marker.to_str().unwrap()),
-            quote(real.to_str().unwrap())
-        ),
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(bundle.join("protoc"), fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let result = std::process::Command::new(executable)
-        .env_remove("PROTOC")
-        .arg("generate")
-        .arg("--config")
-        .arg(d.path().join("proto/generator.toml"))
-        .output()
+    for target in ["php", "rust"] {
+        let (d, _) = fixture(target);
+        let bundle = d.path().join("downloaded");
+        fs::create_dir_all(&bundle).unwrap();
+        let executable = bundle.join("proto-gen");
+        fs::copy(env!("CARGO_BIN_EXE_proto-gen"), &executable).unwrap();
+        let marker = bundle.join("compiler-used");
+        let real = compiler::protoc();
+        let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        put(
+            &bundle,
+            "protoc",
+            &format!(
+                "#!/bin/sh\nprintf used >> {}\nexec {} \"$@\"\n",
+                quote(marker.to_str().unwrap()),
+                quote(real.to_str().unwrap())
+            ),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(bundle.join("protoc"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let reject = bundle.join("path-only");
+        fs::create_dir_all(&reject).unwrap();
+        put(
+            &reject,
+            "protoc",
+            "#!/bin/sh\necho 'Unexpected PATH compiler' >&2\nexit 99\n",
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(reject.join("protoc"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths(
+            std::iter::once(reject)
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
         .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert!(
-        marker.exists(),
-        "portable binary did not use the compiler next to it"
-    );
+        let result = std::process::Command::new(executable)
+            .env("PATH", path)
+            .env_remove("PROTOC")
+            .arg("generate")
+            .arg("--config")
+            .arg(d.path().join("proto/generator.toml"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            marker.exists(),
+            "portable binary did not use the compiler next to it"
+        );
+    }
 }
