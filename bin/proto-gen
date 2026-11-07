@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+TOOL_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec cargo run --quiet --locked --manifest-path "$TOOL_ROOT/Cargo.toml" --bin proto-gen -- "$@"

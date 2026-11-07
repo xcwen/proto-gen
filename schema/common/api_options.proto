@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/descriptor.proto";
+
+// 构建期接口元数据，不生成到业务运行时的消息类中。
+extend google.protobuf.FileOptions {
+  ApiOptions api = 50001;
+}
+
+message ApiOptions {
+  string title = 1;
+  repeated string category_path = 2;
+  repeated string tags = 3;
+  repeated string maintainers = 4;
+
+  // 可省略；未设置的字段沿用现有生成与运行时规则。
+  HttpOptions http = 5;
+  Auth auth = 6;
+  string description = 7;
+  // 相对于当前接口文件，与 description 二选一。
+  string description_file = 8;
+  repeated string export_targets = 9;
+  repeated ApiExample examples = 10;
+  bool deprecated = 11;
+  string deprecation_message = 12;
+
+  // 兼容原有 __PROJECT、config 区块和 __CMD。
+  string project = 13;
+  string config_json = 14;
+  int32 command_id = 15;
+
+  // Rust/Go 的 64 位整数 JSON 表示；未设置时沿用各运行时默认值。
+  JsonInt64Policy json_int64 = 16;
+
+  enum JsonInt64Policy {
+    JSON_INT64_UNSPECIFIED = 0;
+    JSON_INT64_STRING = 1;
+    JSON_INT64_NUMBER = 2;
+  }
+
+  enum Auth {
+    AUTH_UNSPECIFIED = 0;
+    PUBLIC = 1;
+    SESSION = 2;
+    PRIVATE = 3;
+  }
+}
+
+message HttpOptions {
+  Method method = 1;
+  string path = 2;
+  string request_content_type = 3;
+
+  enum Method {
+    METHOD_UNSPECIFIED = 0;
+    GET = 1;
+    POST = 2;
+    PUT = 3;
+    PATCH = 4;
+    DELETE = 5;
+    HEAD = 6;
+    OPTIONS = 7;
+  }
+}
+
+message ApiExample {
+  string name = 1;
+  string request_json = 2;
+  string response_json = 3;
+}

@@ -1,0 +1,25 @@
+//
+{{IMPORTS}}
+//
+{{PROTO_IMPORTS}}
+
+
+import { action_ret_t } from "@/utils/type_def";
+
+var cmd_map: Record<string, {
+    ctrl:  any ,
+    proto_in:  any,
+    proto_out:  any,
+    action:  string,
+    title: string,
+    auth : 'session' | 'public' | 'private',
+}> = {
+{{ROUTES}}
+};
+//只是用来检查ctrl 代码
+export async function check_function()  {
+    var ret:action_ret_t = "FINISHED";
+{{CHECKS}}
+    console.log(ret);
+}
+export default cmd_map;

@@ -1,0 +1,74 @@
+use anyhow::{bail, Context, Result};
+use std::path::PathBuf;
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("proto-gen: {e:#}");
+        std::process::exit(1);
+    }
+}
+fn run() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    let cmd = args.next().unwrap_or_else(|| "help".into());
+    if cmd == "--version" {
+        println!("proto-gen {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if cmd == "help" || cmd == "--help" {
+        println!("proto-gen generate --config proto/generator.toml [--check]\nproto-gen openapi --config proto/generator.toml --out openapi.json\nproto-gen sync-apifox --config proto/generator.toml [--dry-run] <protocol.proto>\nproto-gen --version");
+        return Ok(());
+    }
+    let mut config = None;
+    let mut check = false;
+    let mut out = None;
+    let mut rest = vec![];
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" => config = Some(PathBuf::from(args.next().context("missing config path")?)),
+            "--check" if cmd == "generate" => check = true,
+            "--out" if cmd == "openapi" => {
+                out = Some(PathBuf::from(args.next().context("missing output path")?))
+            }
+            _ => rest.push(arg),
+        }
+    }
+    let config = config.unwrap_or_else(|| PathBuf::from("proto/generator.toml"));
+    match cmd.as_str() {
+        "generate" => {
+            anyhow::ensure!(rest.is_empty(), "unknown options: {rest:?}");
+            workspace_proto_gen::project::run(&config, check)
+        }
+        "openapi" => {
+            anyhow::ensure!(rest.is_empty(), "unknown options: {rest:?}");
+            let c = workspace_proto_gen::compiler::Config::load(&config)?;
+            let w = workspace_proto_gen::compiler::compile(&c.source, &c.target)?;
+            let project = serde_json::from_value(
+                serde_json::json!({"apifox_project_name":"local","url_replace_cfg":{},"tag_list":[]}),
+            )?;
+            let mut paths = serde_json::Map::new();
+            for a in &w.endpoints {
+                let mut doc =
+                    workspace_proto_gen::apifox::document(&a.runtime_api(), &w.pool, "", &project)?;
+                for op in doc["paths"].as_object_mut().unwrap().values_mut() {
+                    for o in op.as_object_mut().unwrap().values_mut() {
+                        if let Some(tags) = o["tags"].as_array_mut() {
+                            for t in tags {
+                                if t == "rust" {
+                                    *t = serde_json::json!(c.target);
+                                }
+                            }
+                        }
+                    }
+                }
+                paths.extend(doc["paths"].as_object().unwrap().clone());
+            }
+            let doc = serde_json::json!({"openapi":"3.1.0","info":{"title":"Generated API","version":"1"},"paths":paths});
+            workspace_proto_gen::project::put(
+                &out.context("--out is required")?,
+                serde_json::to_vec_pretty(&doc)?,
+            )
+        }
+        "sync-apifox" => tokio::runtime::Runtime::new()?
+            .block_on(workspace_proto_gen::apifox::run_config(rest, &config)),
+        _ => bail!("unknown command {cmd}"),
+    }
+}
