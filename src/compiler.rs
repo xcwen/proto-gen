@@ -233,6 +233,14 @@ pub fn command(cmd: &mut Command) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
+    compile_with_overrides(source, target, &BTreeMap::new())
+}
+/// Validate an edit in the compiler's staging directory before changing the source file.
+pub fn compile_with_overrides(
+    source: &Path,
+    target: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<Workspace> {
     let source = source.canonicalize()?;
     let stage = tempfile::tempdir()?;
     let mut mapped = BTreeMap::new();
@@ -272,7 +280,10 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         if ["common/api_options.proto", "common/field_options.proto"].contains(&rel.as_str()) {
             continue;
         }
-        let mut text = fs::read_to_string(&path)?;
+        let mut text = match overrides.get(&rel) {
+            Some(text) => text.clone(),
+            None => fs::read_to_string(&path)?,
+        };
         ensure!(
             !removed_policy.is_match(&crate::code(&text)),
             "json_int64/default_json are removed; use JSON strings for 64-bit integers and common.field.default"

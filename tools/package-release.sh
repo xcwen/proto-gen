@@ -7,6 +7,7 @@ install -m 0755 toolchain/bin/protoc "dist/$PACKAGE/protoc"
 install -m 0755 dist-tools/protoc-gen-go "dist/$PACKAGE/protoc-gen-go"
 cp schema/common/*.proto "dist/$PACKAGE/schema/common/"
 cp README.md include/LICENSE.protobuf "dist/$PACKAGE/"
+cp -R docs "dist/$PACKAGE/docs"
 printf '%s\n' "$RELEASE_TAG" > "dist/$PACKAGE/version.txt"
 "dist/$PACKAGE/proto-gen" --version
 "dist/$PACKAGE/protoc" --version

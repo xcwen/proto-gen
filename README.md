@@ -7,7 +7,7 @@ PHP、TypeScript、Rust、Go 共用的协议生成器。只接受新版 `common/
 ## 使用
 
 ```bash
-GENERATOR=$(sh install.sh v0.2.0 .tools/proto-gen)
+GENERATOR=$(sh install.sh v0.3.0 .tools/proto-gen)
 "$GENERATOR" generate --config ../node-core/proto/generator.toml
 "$GENERATOR" generate --config ../node-core/proto/generator.toml --check
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json
@@ -19,6 +19,18 @@ macOS/Linux x86_64/ARM64，核对 SHA256SUMS 并缓存。缓存命中时无需�
 也不依赖相邻源码仓库；PROTO_GEN_BIN 可显式覆盖。Docker 把项目挂载至 /code 后，
 缓存保留在宿主机项目目录，容器重启或重建不重复下载。
 生成不重启服务，不自动同步远端文档。
+
+## Web 工作台
+
+```bash
+# 在业务仓库启动；支持重复 --config 管理多个项目
+proto-gen serve --config proto/generator.toml --listen 127.0.0.1:7337
+```
+
+浏览器访问 http://127.0.0.1:7337，支持协议搜索、标签筛选、参数和响应查看、标题/标签编辑、
+保存并生成、JSON/GET/multipart 请求调试，以及单个或批量 Apifox 预览/同步。
+HTML/CSS/JS 内置于二进制，不需要前端构建或联网加载资源。
+使用说明见 [Web 工作台](docs/web-workbench.md)。
 
 ## Release 与工具链
 

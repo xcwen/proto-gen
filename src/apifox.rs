@@ -115,7 +115,7 @@ pub fn api_path(path: &str, replacements: &Map<String, Value>) -> Result<String>
 
 pub use crate::openapi::document;
 
-fn project_id(project: &Project, env: &str) -> Option<String> {
+pub fn project_id(project: &Project, env: &str) -> Option<String> {
     let value = if env == "release" {
         &project.apifox_project_id
     } else {
@@ -157,7 +157,12 @@ pub fn validate_response(status: u16, body: &str) -> Result<()> {
     ensure!(changed > 0, "Apifox 未创建或更新任何接口");
     Ok(())
 }
-async fn sync(client: &reqwest::Client, project: &Project, id: &str, data: &Value) -> Result<()> {
+pub async fn sync(
+    client: &reqwest::Client,
+    project: &Project,
+    id: &str,
+    data: &Value,
+) -> Result<()> {
     let endpoint = format!("https://api.apifox.com/v1/projects/{id}/import-openapi?locale=zh-CN");
     sync_endpoint(client, project, id, data, &endpoint).await
 }
@@ -199,17 +204,79 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
     };
     let config = Config::load(generator.source.parent().unwrap())?;
     let workspace = crate::compiler::compile(&generator.source, &generator.target)?;
+    let sources: Vec<String> = options
+        .files
+        .iter()
+        .map(|file| {
+            file.strip_prefix(root.join("proto/src"))
+                .context("协议不在当前项目内")
+                .and_then(|p| p.to_str().context("非 UTF-8 路径"))
+                .map(str::to_owned)
+        })
+        .collect::<Result<_>>()?;
+    let jobs = plan(&workspace, &config, &sources, &options.env, None)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    for (rel, project, id, data) in &jobs {
+        println!(
+            "同步到:[{}]{}:{id}: {rel}",
+            options.env, project.apifox_project_name
+        );
+        if options.dry_run {
+            println!("{}", serde_json::to_string_pretty(data)?);
+        } else {
+            sync(&client, project, id, data)
+                .await
+                .with_context(|| format!("同步失败，停止后续协议: {rel}"))?;
+            println!("导入成功");
+        }
+    }
+    println!(
+        "{}，共 {} 个协议、{} 次导入{}。",
+        if options.dry_run {
+            "预览完成"
+        } else {
+            "同步完成"
+        },
+        options.files.len(),
+        jobs.len(),
+        if options.dry_run {
+            "，未发送网络请求"
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
+/// Shared preflight for the CLI and Web publishing actions.
+pub fn plan<'a>(
+    workspace: &crate::compiler::Workspace,
+    config: &'a Config,
+    sources: &[String],
+    env: &str,
+    selected: Option<&[usize]>,
+) -> Result<Vec<(String, &'a Project, String, Value)>> {
+    ensure!(!sources.is_empty(), "至少选择一个协议");
+    if let Some(ids) = selected {
+        ensure!(
+            !ids.is_empty() && ids.iter().all(|i| *i < config.project_list.len()),
+            "无效的 Apifox 项目选择"
+        );
+    }
+    ensure!(
+        ["release", "test"].contains(&env),
+        "invalid Apifox environment"
+    );
     let apis = &workspace.endpoints;
     // Preflight every protocol/project before the first remote write.
     let mut jobs = Vec::new();
-    for file in &options.files {
-        let rel = file
-            .strip_prefix(root.join("proto/src"))?
-            .to_str()
-            .context("非 UTF-8 路径")?;
+    for rel in sources {
         let api = apis
             .iter()
-            .find(|a| a.source == rel)
+            .find(|a| a.source == *rel)
             .with_context(|| format!("未找到 {rel}，请先运行 ./gen_proto.sh"))?;
         let tags = api.meta.tags.clone();
         let explicit_targets = &api.meta.export_targets;
@@ -254,11 +321,27 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(",")
         );
+        let projects: Vec<_> = projects
+            .into_iter()
+            .filter(|p| {
+                selected.is_none_or(|ids| {
+                    config
+                        .project_list
+                        .iter()
+                        .position(|x| std::ptr::eq(x, *p))
+                        .is_some_and(|i| ids.contains(&i))
+                })
+            })
+            .collect();
+        ensure!(
+            !projects.is_empty(),
+            "没有选中匹配协议标签的可用 Apifox 项目"
+        );
         for project in projects {
-            let id = project_id(project, &options.env).with_context(|| {
+            let id = project_id(project, env).with_context(|| {
                 format!(
                     "selected project {} has no {} project ID",
-                    project.apifox_project_name, options.env
+                    project.apifox_project_name, env
                 )
             })?;
             ensure!(
@@ -269,7 +352,7 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
                 rel.to_owned(),
                 project,
                 id,
-                document(api, &workspace, project)?,
+                document(api, workspace, project)?,
             ));
         }
     }
@@ -289,40 +372,7 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
             }
         }
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    for (rel, project, id, data) in &jobs {
-        println!(
-            "同步到:[{}]{}:{id}: {rel}",
-            options.env, project.apifox_project_name
-        );
-        if options.dry_run {
-            println!("{}", serde_json::to_string_pretty(data)?);
-        } else {
-            sync(&client, project, id, data)
-                .await
-                .with_context(|| format!("同步失败，停止后续协议: {rel}"))?;
-            println!("导入成功");
-        }
-    }
-    println!(
-        "{}，共 {} 个协议、{} 次导入{}。",
-        if options.dry_run {
-            "预览完成"
-        } else {
-            "同步完成"
-        },
-        options.files.len(),
-        jobs.len(),
-        if options.dry_run {
-            "，未发送网络请求"
-        } else {
-            ""
-        }
-    );
-    Ok(())
+    Ok(jobs)
 }
 
 #[cfg(test)]

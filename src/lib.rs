@@ -195,3 +195,6 @@ pub mod {module} {{
     }
     Ok(())
 }
+
+pub mod metadata_edit;
+pub mod web;

@@ -14,8 +14,37 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if cmd == "help" || cmd == "--help" {
-        println!("proto-gen generate --config proto/generator.toml [--check]\nproto-gen openapi --config proto/generator.toml --out openapi.json\nproto-gen sync-apifox --config proto/generator.toml [--dry-run] <protocol.proto>\nproto-gen --version");
+        println!("proto-gen generate --config proto/generator.toml [--check]\nproto-gen openapi --config proto/generator.toml --out openapi.json\nproto-gen sync-apifox --config proto/generator.toml [--dry-run] <protocol.proto>\nproto-gen serve [--config proto/generator.toml ...] [--listen 127.0.0.1:7337] [--token-env NAME]\nproto-gen --version");
         return Ok(());
+    }
+    if cmd == "serve" || cmd == "web" {
+        let mut configs = vec![];
+        let mut listen = "127.0.0.1:7337".parse()?;
+        let mut token_env = None;
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--config" => {
+                    configs.push(PathBuf::from(args.next().context("missing config path")?))
+                }
+                "--listen" => listen = args.next().context("missing listen address")?.parse()?,
+                "--token-env" => {
+                    token_env = Some(
+                        args.next()
+                            .context("missing token environment variable name")?,
+                    )
+                }
+                "--help" | "-h" => {
+                    println!("proto-gen serve [--config proto/generator.toml ...] [--listen 127.0.0.1:7337] [--token-env NAME]");
+                    return Ok(());
+                }
+                _ => bail!("unknown Web option: {arg}"),
+            }
+        }
+        if configs.is_empty() {
+            configs.push(PathBuf::from("proto/generator.toml"));
+        }
+        return tokio::runtime::Runtime::new()?
+            .block_on(workspace_proto_gen::web::serve(configs, listen, token_env));
     }
     let mut config = None;
     let mut check = false;
