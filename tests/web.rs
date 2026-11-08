@@ -77,6 +77,8 @@ async fn browse_edit_generate_conflicts_and_preview_share_the_native_model() {
         .await
         .unwrap();
     assert_eq!(detail["openapi"]["openapi"], "3.1.0");
+    assert_eq!(list["workspace_revision"], detail["workspace_revision"]);
+    assert!(list["workspace_revision"].is_string());
     assert!(!detail.to_string().contains("do-not-leak-this-token"));
     let patch = json!({"source":"demo/job__list.proto","revision":detail["revision"],"title":"新的标题 \"引号\"","tags":["demo","new"]});
     let blocked = client.patch(&url).json(&patch).send().await.unwrap();
@@ -113,7 +115,7 @@ async fn browse_edit_generate_conflicts_and_preview_share_the_native_model() {
     let response = client
         .post(format!("{base}/api/projects/0/apifox/preview"))
         .header("x-proto-csrf", &token)
-        .json(&json!({"sources":["demo/job__list.proto"],"env":"test","targets":[0]}))
+        .json(&json!({"workspace_revision":saved["workspace_revision"],"sources":["demo/job__list.proto"],"env":"test","targets":[0]}))
         .send()
         .await
         .unwrap();
@@ -124,6 +126,14 @@ async fn browse_edit_generate_conflicts_and_preview_share_the_native_model() {
         .get("/v1/job/list")
         .is_some());
     assert!(!preview.to_string().contains("do-not-leak-this-token"));
+    let config_file = d.path().join("proto/config.json");
+    let changed = fs::read_to_string(&config_file)
+        .unwrap()
+        .replace("123", "789");
+    fs::write(config_file, changed).unwrap();
+    let stale=client.post(format!("{base}/api/projects/0/apifox/preview")).header("x-proto-csrf",&token).json(&json!({"workspace_revision":saved["workspace_revision"],"sources":["demo/job__list.proto"],"env":"test","targets":[0]})).send().await.unwrap();
+    assert_eq!(stale.status(), 409);
+
     assert_eq!(
         client
             .get(format!(

@@ -32,6 +32,8 @@ const REQUEST_LIMIT: usize = 24 * 1024 * 1024;
 struct Cached {
     fingerprint: u64,
     workspace: Workspace,
+    settings: Settings,
+    revision: String,
 }
 pub struct Project {
     config_path: PathBuf,
@@ -60,10 +62,18 @@ impl std::fmt::Display for EditConflict {
     }
 }
 impl std::error::Error for EditConflict {}
+#[derive(Debug)]
+struct PublishConflict;
+impl std::fmt::Display for PublishConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "协议或发布配置已变更，请刷新后重新预览")
+    }
+}
+impl std::error::Error for PublishConflict {}
 impl From<anyhow::Error> for WebError {
     fn from(e: anyhow::Error) -> Self {
         Self {
-            status: if e.is::<EditConflict>() {
+            status: if e.is::<EditConflict>() || e.is::<PublishConflict>() {
                 StatusCode::CONFLICT
             } else {
                 StatusCode::BAD_REQUEST
@@ -139,6 +149,9 @@ fn fingerprint(p: &Project) -> Result<u64> {
     Ok(h.finish())
 }
 fn snapshot<T>(p: &Project, f: impl FnOnce(&Workspace) -> Result<T>) -> Result<T> {
+    snapshot_cached(p, |c| f(&c.workspace))
+}
+fn snapshot_cached<T>(p: &Project, f: impl FnOnce(&Cached) -> Result<T>) -> Result<T> {
     let mut guard = p
         .cache
         .lock()
@@ -146,13 +159,16 @@ fn snapshot<T>(p: &Project, f: impl FnOnce(&Workspace) -> Result<T>) -> Result<T
     let hash = fingerprint(p)?;
     if guard.as_ref().is_none_or(|c| c.fingerprint != hash) {
         let workspace = compiler::compile(&p.config.source, &p.config.target)?;
+        let settings = Settings::load(p.config.source.parent().unwrap())?;
         ensure!(hash == fingerprint(p)?, "协议正在被外部修改，请刷新重试");
         *guard = Some(Cached {
             fingerprint: hash,
             workspace,
+            settings,
+            revision: random_token()?,
         });
     }
-    f(&guard.as_ref().unwrap().workspace)
+    f(guard.as_ref().unwrap())
 }
 fn selected<'a>(w: &'a Workspace, source: &str) -> Result<&'a compiler::Endpoint> {
     w.endpoints
@@ -192,7 +208,8 @@ fn eligible(a: &compiler::Endpoint, p: &crate::settings::Project) -> bool {
 fn summary(a: &compiler::Endpoint) -> Value {
     json!({"source":a.source,"title":a.meta.title,"tags":a.meta.tags,"category_path":a.meta.category_path,"path":a.path,"method":if a.method().is_empty(){"POST"}else{a.method()},"auth":a.auth(),"deprecated":a.meta.deprecated,"export_targets":a.meta.export_targets})
 }
-fn detail(p: &Project, w: &Workspace, source: &str) -> Result<Value> {
+fn detail(p: &Project, cached: &Cached, source: &str) -> Result<Value> {
+    let w = &cached.workspace;
     let a = selected(w, source)?;
     let text = fs::read_to_string(source_path(p, source)?)?;
     let mut out = summary(a);
@@ -201,7 +218,8 @@ fn detail(p: &Project, w: &Workspace, source: &str) -> Result<Value> {
     out["description"] = json!(a.meta.description);
     out["maintainers"] = json!(a.meta.maintainers);
     out["openapi"] = openapi::document(a, w, &local_project())?;
-    let cfg = Settings::load(p.config.source.parent().unwrap())?;
+    out["workspace_revision"] = json!(cached.revision);
+    let cfg = &cached.settings;
     out["targets"]=json!(cfg.project_list.iter().enumerate().map(|(id,t)|json!({"id":id,"name":t.apifox_project_name,"key":t.name,"release_id":apifox::project_id(t,"release"),"test_id":apifox::project_id(t,"test"),"eligible":eligible(a,t),"configured":!t.apifox_token.is_empty(),"tags":t.tag_list})).collect::<Vec<_>>());
     Ok(out)
 }
@@ -354,10 +372,8 @@ async fn projects(State(app): State<App>) -> Json<Value> {
 async fn protocols(State(app): State<App>, ApiPath(id): ApiPath<usize>) -> WebResult<Json<Value>> {
     let p = app.project(id)?;
     blocking(move || {
-        snapshot(&p, |w| {
-            Ok(Json(
-                json!({"protocols":w.endpoints.iter().map(summary).collect::<Vec<_>>()}),
-            ))
+        snapshot_cached(&p, |cached| {
+            Ok(Json(json!({"workspace_revision":cached.revision,"protocols":cached.workspace.endpoints.iter().map(summary).collect::<Vec<_>>()})))
         })
     })
     .await
@@ -372,7 +388,7 @@ async fn protocol(
     Query(q): Query<Source>,
 ) -> WebResult<Json<Value>> {
     let p = app.project(id)?;
-    blocking(move || snapshot(&p, |w| detail(&p, w, &q.source).map(Json))).await
+    blocking(move || snapshot_cached(&p, |cached| detail(&p, cached, &q.source).map(Json))).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -418,7 +434,7 @@ async fn edit(
         *p.cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache unavailable"))? = None;
-        snapshot(&p, |w| detail(&p, w, &input.source).map(Json))
+        snapshot_cached(&p, |cached| detail(&p, cached, &input.source).map(Json))
     })
     .await
 }
@@ -441,6 +457,7 @@ async fn generate(State(app): State<App>, ApiPath(id): ApiPath<usize>) -> WebRes
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct Publish {
+    workspace_revision: String,
     sources: Vec<String>,
     env: String,
     targets: Option<Vec<usize>>,
@@ -452,11 +469,13 @@ struct Job {
     document: Value,
 }
 fn jobs(p: &Project, input: &Publish) -> Result<Vec<Job>> {
-    let cfg = Settings::load(p.config.source.parent().unwrap())?;
-    snapshot(p, |w| {
+    snapshot_cached(p, |cached| {
+        if input.workspace_revision != cached.revision {
+            return Err(PublishConflict.into());
+        }
         apifox::plan(
-            w,
-            &cfg,
+            &cached.workspace,
+            &cached.settings,
             &input.sources,
             &input.env,
             input.targets.as_deref(),

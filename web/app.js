@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const pretty = value => JSON.stringify(value, null, 2);
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
-const state = { projects: [], project: null, protocols: [], current: null, selected: new Set(), tab: 'document', resultTab: 'body', response: null, preview: null, drafts: new Map(), expanded: new Set(['response.data']), branch: 0, epoch: 0, edit: null, token: '' };
+const state = { projects: [], project: null, listRevision: '', protocols: [], current: null, selected: new Set(), tab: 'document', resultTab: 'body', response: null, preview: null, drafts: new Map(), expanded: new Set(['response.data']), branch: 0, epoch: 0, edit: null, token: '' };
 let toastTimer;
 function toast(message, bad = false) { $('toast').textContent = message; $('toast').classList.toggle('error', bad); $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, bad ? 8500 : 4000); }
 async function api(path, options = {}) {
@@ -199,7 +199,7 @@ async function loadProject(id, preferredSource) {
     $('search').value = ''; $('tag-filter').value = ''; $('protocol-list').replaceChildren(node('div', 'list-message', '正在加载协议…')); message('读取协议', '正在加载项目中的接口定义…', true); renderSelection();
     const currentId = state.project.id;
     try {
-        const data = await api(projectApi('protocols', currentId)); if (currentId !== state.project.id) return; state.protocols = data.protocols;
+        const data = await api(projectApi('protocols', currentId)); if (currentId !== state.project.id) return; state.protocols = data.protocols; state.listRevision = data.workspace_revision;
         const filter = $('tag-filter'); filter.replaceChildren(node('option', '', '全部标签')); filter.firstChild.value = '';
         [...new Set(state.protocols.flatMap(p => p.tags))].sort().forEach(tag => { const option = node('option', '', tag); option.value = tag; filter.append(option); }); renderList();
         if (state.protocols.length) await loadProtocol(state.protocols.some(p => p.source === preferredSource) ? preferredSource : state.protocols[0].source, false); else message('暂无协议', '当前项目没有可查看的接口。');
@@ -254,7 +254,7 @@ function renderPublish() {
     }
     if (!state.current.targets.length) targets.append(node('div', 'schema-note', '当前项目尚未配置 Apifox 发布目标，请先设置 proto/config.json。'));
 }
-function publishPayload() { const sources = publishSources(), targets = [...$('publish-targets').querySelectorAll('input:checked')].map(n => Number(n.value)); if (!sources.length) throw new Error('请先选择要同步的协议'); if (!targets.length) throw new Error('请先选择可用的发布目标；如未配置测试项目，可切换到正式项目查看'); return { sources, env: $('publish-env').value, targets }; }
+function publishPayload() { const sources = publishSources(), targets = [...$('publish-targets').querySelectorAll('input:checked')].map(n => Number(n.value)); if (!sources.length) throw new Error('请先选择要同步的协议'); if (!targets.length) throw new Error('请先选择可用的发布目标；如未配置测试项目，可切换到正式项目查看'); if (state.listRevision !== state.current.workspace_revision) throw new Error('协议或发布配置已变更，请刷新后重新预览'); return { workspace_revision: state.current.workspace_revision, sources, env: $('publish-env').value, targets }; }
 async function publishAction(actual) {
     const projectId = state.project.id, source = state.current.source, projectName = state.project.name; const button = $(actual ? 'sync-apifox' : 'preview-apifox'), done = busy(button, actual ? '同步中…' : '生成预览…'); $('publish-status').textContent = actual ? '正在同步所选协议…' : '正在验证发布文档…';
     try {
@@ -271,7 +271,7 @@ async function saveMetadata(event) {
     try {
         rememberDraft(); const tags = $('edit-tags').value.split(/\r?\n/).map(t => t.trim()).filter(Boolean);
         const data = await api(projectApi('protocol', context.project), { method: 'PATCH', body: { source: context.source, revision: context.revision, title: $('edit-title').value, tags } });
-        if (state.project.id === context.project) { const row = state.protocols.find(p => p.source === context.source); if (row) Object.assign(row, { title: data.title, tags: data.tags }); const filter = $('tag-filter'), chosen = filter.value; filter.replaceChildren(node('option', '', '全部标签')); filter.firstChild.value = ''; [...new Set(state.protocols.flatMap(p => p.tags))].sort().forEach(tag => { const option = node('option', '', tag); option.value = tag; filter.append(option); }); filter.value = [...filter.options].some(o => o.value === chosen) ? chosen : ''; if (state.current?.source === context.source) { state.current = data; renderCurrent(); } else renderList(); }
+        if (state.project.id === context.project) { const list = await api(projectApi('protocols', context.project)); state.protocols = list.protocols; state.listRevision = list.workspace_revision; const row = state.protocols.find(p => p.source === context.source); if (row) Object.assign(row, { title: data.title, tags: data.tags }); const filter = $('tag-filter'), chosen = filter.value; filter.replaceChildren(node('option', '', '全部标签')); filter.firstChild.value = ''; [...new Set(state.protocols.flatMap(p => p.tags))].sort().forEach(tag => { const option = node('option', '', tag); option.value = tag; filter.append(option); }); filter.value = [...filter.options].some(o => o.value === chosen) ? chosen : ''; if (state.current?.source === context.source) { state.current = data; renderCurrent(); } else renderList(); }
         $('edit-dialog').close(); toast('标题与标签已保存，项目代码已重新生成');
     } catch (e) { $('edit-error').hidden = false; $('edit-error').textContent = e.message; } finally { done(); }
 }
