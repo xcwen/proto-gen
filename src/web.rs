@@ -73,7 +73,10 @@ impl std::error::Error for PublishConflict {}
 impl From<anyhow::Error> for WebError {
     fn from(e: anyhow::Error) -> Self {
         Self {
-            status: if e.is::<EditConflict>() || e.is::<PublishConflict>() {
+            status: if e.is::<EditConflict>()
+                || e.is::<PublishConflict>()
+                || e.is::<crate::environments::Conflict>()
+            {
                 StatusCode::CONFLICT
             } else {
                 StatusCode::BAD_REQUEST
@@ -270,6 +273,10 @@ impl App {
             .route("/style.css", get(css))
             .route("/api/projects", get(projects))
             .route("/api/projects/{id}/protocols", get(protocols))
+            .route(
+                "/api/projects/{id}/environments",
+                get(get_environments).put(save_environments),
+            )
             .route("/api/projects/{id}/protocol", get(protocol).patch(edit))
             .route("/api/projects/{id}/generate", post(generate))
             .route("/api/projects/{id}/request", post(request))
@@ -375,6 +382,47 @@ async fn protocols(State(app): State<App>, ApiPath(id): ApiPath<usize>) -> WebRe
         snapshot_cached(&p, |cached| {
             Ok(Json(json!({"workspace_revision":cached.revision,"protocols":cached.workspace.endpoints.iter().map(summary).collect::<Vec<_>>()})))
         })
+    })
+    .await
+}
+async fn get_environments(
+    State(app): State<App>,
+    ApiPath(id): ApiPath<usize>,
+) -> WebResult<Json<Value>> {
+    let p = app.project(id)?;
+    blocking(move || {
+        let store = crate::environments::load(p.config.source.parent().unwrap())?;
+        Ok(Json(
+            json!({"config":store.config,"revision":store.revision}),
+        ))
+    })
+    .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentEdit {
+    revision: String,
+    config: crate::environments::Configuration,
+}
+async fn save_environments(
+    State(app): State<App>,
+    ApiPath(id): ApiPath<usize>,
+    Json(input): Json<EnvironmentEdit>,
+) -> WebResult<Json<Value>> {
+    let p = app.project(id)?;
+    blocking(move || {
+        let _lock = p
+            .lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("project settings unavailable"))?;
+        let store = crate::environments::save(
+            p.config.source.parent().unwrap(),
+            &input.revision,
+            input.config,
+        )?;
+        Ok(Json(
+            json!({"config":store.config,"revision":store.revision}),
+        ))
     })
     .await
 }
@@ -542,6 +590,12 @@ async fn publish(
 #[serde(deny_unknown_fields)]
 struct TestRequest {
     source: String,
+    #[serde(default)]
+    environment: Option<String>,
+    #[serde(default)]
+    environment_revision: Option<String>,
+    #[serde(default)]
+    auth: Option<crate::environments::Authentication>,
     base_url: String,
     path: String,
     method: String,
@@ -603,13 +657,67 @@ async fn request(
             return Err(error(StatusCode::BAD_REQUEST, "未知的调试表单字段"));
         }
     }
-    let input = input.context("缺少调试请求配置")?;
+    let mut input = input.context("缺少调试请求配置")?;
     let source = input.source.clone();
-    blocking(move || snapshot(&p, |w| selected(w, &source).map(|_| ()))).await?;
+    let settings = blocking(move || {
+        snapshot(&p, |w| selected(w, &source).map(|_| ()))?;
+        crate::environments::load(p.config.source.parent().unwrap())
+    })
+    .await?;
+    prepare_request(&mut input, &settings)?;
     execute_request(input, uploads)
         .await
         .map(Json)
         .map_err(WebError::from)
+}
+fn prepare_request(input: &mut TestRequest, store: &crate::environments::Store) -> Result<()> {
+    use crate::environments::{self as env, Authentication};
+    let environment = if let Some(id) = input.environment.as_deref().filter(|s| !s.is_empty()) {
+        if input.environment_revision.as_deref() != Some(&store.revision) {
+            return Err(env::Conflict.into());
+        }
+        Some(store.config.environment(id)?)
+    } else {
+        None
+    };
+    let empty = BTreeMap::new();
+    let variables = environment.map(|e| &e.variables).unwrap_or(&empty);
+    if environment.is_some() {
+        input.base_url = env::render(&input.base_url, variables)?;
+        input.path = env::render(&input.path, variables)?;
+        input.content_type = env::render(&input.content_type, variables)?;
+        ensure!(
+            !input.base_url.trim().is_empty(),
+            "请配置当前环境的 API_BASE_URL 或填写服务地址"
+        );
+        let query = env::render_value(json!(input.query), variables)?;
+        input.query = serde_json::from_value(query)?;
+        let headers = env::render_value(json!(input.headers), variables)?;
+        input.headers = serde_json::from_value(headers)?;
+        input.body = env::render_body(&input.body, &input.content_type, variables)?;
+        ensure!(
+            input.body.len() <= 20 * 1024 * 1024,
+            "变量展开后的请求 body 超过 20 MiB"
+        );
+    }
+    ensure!(
+        !input.base_url.trim().is_empty(),
+        "请配置当前环境的 API_BASE_URL 或填写服务地址"
+    );
+    let none = Authentication {
+        mode: "none".into(),
+        ..Default::default()
+    };
+    let auth = input
+        .auth
+        .as_ref()
+        .filter(|a| a.mode != "environment")
+        .or_else(|| environment.map(|e| &e.auth))
+        .unwrap_or(&none);
+    if let Some(choice) = &input.auth {
+        choice.validate(true)?;
+    }
+    env::authentication(&mut input.headers, auth, variables)
 }
 fn ensure_web(valid: bool, message: &str) -> WebResult<()> {
     if valid {

@@ -198,3 +198,5 @@ pub mod {module} {{
 
 pub mod metadata_edit;
 pub mod web;
+
+pub mod environments;

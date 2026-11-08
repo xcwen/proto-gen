@@ -1,6 +1,6 @@
 # ProtoGen Web 工作台
 
-Web 界面随 v0.3.0 的二进制发布，前端资源全部内置。启动和查看协议不下载 GitHub 文件，不自动向 Apifox 发布。
+Web 界面随 v0.4.0 的二进制发布，前端资源全部内置。启动和查看协议不下载 GitHub 文件，不自动向 Apifox 发布。
 
 ## 启动
 
@@ -14,7 +14,7 @@ Web 界面随 v0.3.0 的二进制发布，前端资源全部内置。启动和�
 默认访问 http://127.0.0.1:7337。也可直接使用缓存的二进制：
 
 ```bash
-.tools/proto-gen/v0.3.0/macos-aarch64/proto-gen serve \
+.tools/proto-gen/v0.4.0/macos-aarch64/proto-gen serve \
   --config proto/generator.toml --listen 127.0.0.1:7337
 ```
 
@@ -46,10 +46,54 @@ Linux 容器可以使用已下载的 linux-x86_64/linux-aarch64 缓存。需要�
 - “生成代码”调用现有统一生成流程。外部修改协议后点击刷新即可重新读取；generator.toml 中项目路径改变后应重启工作台。
 - 请求调试中填写真实服务地址，可包含 /api 或 route__ 前缀；接口路径与地址拼接后发送。Query、Headers 使用 JSON 对象。测试鉴权时在请求头中填写 Authorization、Cookie 或实际服务要求的头。
 - JSON、GET/HEAD 查询参数、原始文本、multipart 文本及文件均可发送。文件字段名可编辑；multipart 的 Content-Type 边界自动生成。等待时间为 1–120 秒，请求最大 20 MiB，响应预览最多 2 MiB；SSE 可查看等待时间内收到的内容。重定向展示原响应，不自动跟随。响应体、响应头、状态码、耗时和实际请求 URL 均可查看，二进制响应可下载。
-- 服务地址按项目保存在浏览器；请求内容、访问口令和调试请求头只保留在当前页面内存。工作台不会自动转发浏览器 Cookie 或自身访问口令到被测服务。
+- 不使用环境时，服务地址按项目保存在浏览器；临时请求内容、访问口令和调试请求头只保留在当前页面内存。环境变量及环境默认认证由本地配置文件持久保存。工作台不会自动转发浏览器 Cookie 或自身访问口令到被测服务。
 - Apifox 面板选择当前接口或批量选择、测试/正式项目以及目标（默认正式项目）。预览和同步复用 CLI 的同一发布计划，并检查页面所见协议和配置的版本；外部修改后须刷新，避免旧页面选中错误目标。未匹配标签、缺少目标 ID、重复发布路径等在远端写入前失败。预览不发送导入请求；点击同步才执行导入。部分成功时明确列出已完成项，并停止后续导入，不自动重试结果不确定的写入。
 
 实际发布继续读取各仓库 proto/config.json 的现有目标配置。界面只返回目标名称、ID、标签和可用状态，Apifox 令牌留在服务端。协议源文件和源码预览按当前项目限定路径；写入接口检查同源会话。
+
+## 请求环境与认证
+
+“请求调试 → 管理环境”预置正式环境、测试环境，可新建、重命名、删除并设置默认环境。每个项目独立保存至 `proto/web.environments.local.json`；该文件已加入五个业务仓库的 .gitignore，Unix 写入权限为 0600，不进入生成元数据或 Apifox 发布配置。未设置真实服务地址/Token 时不猜测或填入线上凭据。环境配置支持版本冲突检查，外部修改后需重新载入。
+
+变量名采用 `API_BASE_URL`、`TOKEN`、`BEAR_TOKEN` 等标识符，变量值为字符串。地址、路径、Query、请求头和 Body 均可引用 `{{变量名}}`。支持变量嵌套引用；缺失、循环、过深引用发送前报错。需要字面量占位符时使用 `\{{变量名}}`，JSON 中的反斜杠需写成 `\\`。
+
+JSON Body 内 `"{{TOKEN}}"` 保持字符串并正确转义引号、反斜杠；不加引号的 `{{LIMIT}}`、`{{ENABLED}}` 按合法 JSON 值解释，可表达数字、false、数组、对象，保留大整数精度。multipart 文本字段同样支持变量；文件数据不替换。
+
+认证方式：
+
+| 方式 | 行为 | 默认填写 |
+| --- | --- | --- |
+| 继承环境认证 | 使用当前环境的默认认证 | 当前环境的配置 |
+| 无认证 | 不额外注入认证头，手填 Headers 仍照常发送 | — |
+| header_token | 指定头直接发送 Token | 头 `token`，值 `{{TOKEN}}` |
+| header_bear_auth | 头中自动添加 Bearer 前缀 | 头 `Authorization`，值 `{{BEAR_TOKEN}}` |
+
+每次请求可覆盖环境认证。认证值和头名可用变量；同名请求头按大小写不敏感方式覆盖，避免重复 Authorization。Bearer 值已有前缀时不重复添加，空 Token 或换行字符会被拒绝。变量编辑区对 Token/Secret 等名称默认遮掩，点击“显示”可查看。
+
+```json
+{
+  "version": 1,
+  "default_environment": "release",
+  "environments": [
+    {
+      "id": "release",
+      "name": "正式环境",
+      "variables": {
+        "API_BASE_URL": "https://api.example.com/api",
+        "TOKEN": "",
+        "BEAR_TOKEN": ""
+      },
+      "auth": {
+        "type": "header_bear_auth",
+        "header_name": "Authorization",
+        "value": "{{BEAR_TOKEN}}"
+      }
+    }
+  ]
+}
+```
+
+请求调试环境和 Apifox 发布项目互相独立：切换测试请求环境不会改变 Apifox 发布环境。Apifox 面板默认正式项目。
 
 ## 验证
 

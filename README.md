@@ -7,7 +7,7 @@ PHP、TypeScript、Rust、Go 共用的协议生成器。只接受新版 `common/
 ## 使用
 
 ```bash
-GENERATOR=$(sh install.sh v0.3.1 .tools/proto-gen)
+GENERATOR=$(sh install.sh v0.4.0 .tools/proto-gen)
 "$GENERATOR" generate --config ../node-core/proto/generator.toml
 "$GENERATOR" generate --config ../node-core/proto/generator.toml --check
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json
@@ -28,7 +28,7 @@ proto-gen serve --config proto/generator.toml --listen 127.0.0.1:7337
 ```
 
 浏览器访问 http://127.0.0.1:7337，支持协议搜索、标签筛选、参数和响应查看、标题/标签编辑、
-保存并生成、JSON/GET/multipart 请求调试，以及单个或批量 Apifox 预览/同步。
+保存并生成、JSON/GET/multipart 请求调试、环境变量和 Token/Bearer 认证，以及单个或批量 Apifox 预览/同步。
 HTML/CSS/JS 内置于二进制，不需要前端构建或联网加载资源。
 使用说明见 [Web 工作台](docs/web-workbench.md)。
 

@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const pretty = value => JSON.stringify(value, null, 2);
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
-const state = { projects: [], project: null, listRevision: '', protocols: [], current: null, selected: new Set(), tab: 'document', resultTab: 'body', response: null, preview: null, drafts: new Map(), expanded: new Set(['response.data']), branch: 0, epoch: 0, edit: null, token: '' };
+const state = { projects: [], project: null, listRevision: '', environments: null, environmentRevision: '', environmentId: '', environmentEdit: null, environmentEditId: '', environmentEditProject: null, protocols: [], current: null, selected: new Set(), tab: 'document', resultTab: 'body', response: null, preview: null, drafts: new Map(), expanded: new Set(['response.data']), branch: 0, epoch: 0, edit: null, token: '' };
 let toastTimer;
 function toast(message, bad = false) { $('toast').textContent = message; $('toast').classList.toggle('error', bad); $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, bad ? 8500 : 4000); }
 async function api(path, options = {}) {
@@ -155,7 +155,7 @@ function renderList() {
 function renderSelection() { $('selection-count').textContent = state.selected.size ? `已选择 ${state.selected.size} 个接口` : '未选择批量接口'; $('clear-selection').hidden = !state.selected.size; if (state.current) renderPublish(); }
 function rememberDraft() {
     if (!state.project || !state.current) return;
-    state.drafts.set(`${state.project.id}:${state.current.source}`, { base: $('base-url').value, path: $('test-path').value, method: $('test-method').value, query: $('query-editor').value, headers: $('headers-editor').value, body: $('body-editor').value, content: $('content-type').value, timeout: $('timeout').value, response: state.response });
+    state.drafts.set(`${state.project.id}:${state.current.source}`, { base: $('base-url').value, path: $('test-path').value, method: $('test-method').value, query: $('query-editor').value, headers: $('headers-editor').value, body: $('body-editor').value, content: $('content-type').value, timeout: $('timeout').value, response: state.response, environmentId: state.environmentId, auth: { type:$('request-auth-type').value, header_name:$('request-auth-header').value, value:$('request-auth-value').value } });
 }
 function fillExample() {
     const op = operation(), media = Object.keys(op.requestBody?.content || {})[0] || 'application/json';
@@ -180,9 +180,10 @@ function renderCurrent() {
     state.branch = 0; renderDocument(); renderList();
     const draft = state.drafts.get(`${state.project.id}:${p.source}`);
     let rememberedBase = ''; try { rememberedBase = localStorage.getItem(`protogen:base:${state.project.root}`) || ''; } catch {}
-    $('base-url').value = draft?.base || rememberedBase; $('test-path').value = draft?.path || p.path; $('test-method').value = draft?.method || p.method; $('headers-editor').value = draft?.headers || '{}'; $('timeout').value = draft?.timeout || '15';
+    $('base-url').value = draft?.base || (state.environmentId ? '{{API_BASE_URL}}' : rememberedBase); $('test-path').value = draft?.path || p.path; $('test-method').value = draft?.method || p.method; $('headers-editor').value = draft?.headers || '{}'; $('timeout').value = draft?.timeout || '15';
     fillExample();
     if (draft) { $('query-editor').value = draft.query; $('body-editor').value = draft.body; $('content-type').value = draft.content; renderFiles(true); }
+    $('request-auth-type').value = draft?.auth?.type || 'environment'; $('request-auth-header').value = draft?.auth?.header_name || ''; $('request-auth-value').value = draft?.auth?.value || ''; renderRequestAuth();
     state.response = draft?.response || null; state.resultTab = 'body'; renderResponse(); state.preview = null; $('publish-result').hidden = true; $('publish-status').textContent = ''; renderPublish(); setTab(state.tab);
 }
 function setTab(tab) { state.tab = tab; document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab)); document.querySelectorAll('.tab-panel').forEach(p => p.hidden = p.id !== `panel-${tab}`); if (tab === 'request') $('base-url').focus(); }
@@ -194,12 +195,12 @@ async function loadProtocol(source, saveDraft = true) {
     finally { if (epoch === state.epoch) { $('load-status').replaceChildren(node('i'), document.createTextNode('本地协议')); } }
 }
 async function loadProject(id, preferredSource) {
-    rememberDraft(); state.project = state.projects.find(p => p.id === Number(id)); state.current = null; state.selected.clear(); state.protocols = []; state.preview = null; $('publish-scope').value = 'current'; $('publish-targets').replaceChildren(); state.epoch++;
+    rememberDraft(); state.project = state.projects.find(p => p.id === Number(id)); state.current = null; state.environments = null; state.environmentRevision = ''; state.environmentId = ''; state.selected.clear(); state.protocols = []; state.preview = null; $('publish-scope').value = 'current'; $('publish-targets').replaceChildren(); state.epoch++;
     $('project-select').value = id; $('project-name').textContent = state.project.name; $('project-meta').textContent = `${state.project.target === 'typescript' ? 'Node.js / TypeScript' : state.project.target.toUpperCase()} · 本地项目`; $('project-select').title = state.project.root;
     $('search').value = ''; $('tag-filter').value = ''; $('protocol-list').replaceChildren(node('div', 'list-message', '正在加载协议…')); message('读取协议', '正在加载项目中的接口定义…', true); renderSelection();
     const currentId = state.project.id;
     try {
-        const data = await api(projectApi('protocols', currentId)); if (currentId !== state.project.id) return; state.protocols = data.protocols; state.listRevision = data.workspace_revision;
+        const [data, environmentData] = await Promise.all([api(projectApi('protocols', currentId)), api(projectApi('environments', currentId))]); if (currentId !== state.project.id) return; state.environments = environmentData.config; state.environmentRevision = environmentData.revision; let environmentId = environmentData.config.default_environment; try { environmentId = localStorage.getItem(`protogen:environment:${state.project.root}`) ?? environmentId; } catch {} state.environmentId = environmentData.config.environments.some(e => e.id === environmentId) ? environmentId : ''; renderEnvironmentSelector(); state.protocols = data.protocols; state.listRevision = data.workspace_revision;
         const filter = $('tag-filter'); filter.replaceChildren(node('option', '', '全部标签')); filter.firstChild.value = '';
         [...new Set(state.protocols.flatMap(p => p.tags))].sort().forEach(tag => { const option = node('option', '', tag); option.value = tag; filter.append(option); }); renderList();
         if (state.protocols.length) await loadProtocol(state.protocols.some(p => p.source === preferredSource) ? preferredSource : state.protocols[0].source, false); else message('暂无协议', '当前项目没有可查看的接口。');
@@ -227,9 +228,9 @@ async function sendRequest() {
     if (!state.current) return; const button = $('send-request'), done = busy(button, '发送中…'), key = `${state.project.id}:${state.current.source}`, id = state.project.id;
     try {
         const headers = jsonObject('headers-editor', '请求头'); if (Object.values(headers).some(v => typeof v !== 'string')) throw new Error('请求头的值必须是字符串');
-        const config = { source: state.current.source, base_url: $('base-url').value.trim(), path: $('test-path').value.trim(), method: $('test-method').value, query: jsonObject('query-editor', 'Query 参数'), headers, body: $('body-editor').value, content_type: $('content-type').value, timeout_seconds: Number($('timeout').value) };
+        const config = { source: state.current.source, base_url: $('base-url').value.trim(), path: $('test-path').value.trim(), method: $('test-method').value, query: jsonObject('query-editor', 'Query 参数'), headers, body: $('body-editor').value, environment: state.environmentId || null, environment_revision: state.environmentId ? state.environmentRevision : null, auth:{ type:$('request-auth-type').value, header_name:$('request-auth-header').value, value:$('request-auth-value').value }, content_type: $('content-type').value, timeout_seconds: Number($('timeout').value) };
         if (!config.base_url) throw new Error('请先填写服务地址');
-        try { localStorage.setItem(`protogen:base:${state.project.root}`, config.base_url); } catch {}
+        if (!state.environmentId) { try { localStorage.setItem(`protogen:base:${state.project.root}`, config.base_url); } catch {} }
         const form = new FormData(); form.append('request', JSON.stringify(config));
         if (config.content_type === 'multipart/form-data') for (const row of $('file-rows').children) { const name = row.querySelector('input[type=text]').value.trim(), file = row.querySelector('input[type=file]').files[0]; if (file) { if (!name) throw new Error('请填写文件字段名'); form.append(name, file, file.name); } }
         rememberDraft(); const response = await api(projectApi('request', id), { method: 'POST', body: form });
@@ -296,5 +297,75 @@ $('preview-apifox').onclick = () => publishAction(false); $('sync-apifox').oncli
 $('copy-preview').onclick = async () => { try { await navigator.clipboard.writeText($('publish-json').textContent); toast('发布文档已复制'); } catch (e) { toast(e.message, true); } };
 $('edit-metadata').onclick = openEditor; $('close-edit').onclick = $('cancel-edit').onclick = () => $('edit-dialog').close(); $('metadata-form').onsubmit = saveMetadata;
 $('auth-form').onsubmit = async event => { event.preventDefault(); state.token = $('access-token').value; $('auth-error').hidden = true; try { await api('/api/projects'); $('auth-dialog').close(); $('access-token').value = ''; await boot(); } catch (e) { $('auth-error').textContent = e.message; $('auth-error').hidden = false; } };
-document.addEventListener('keydown', e => { if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) && !$('edit-dialog').open && !$('auth-dialog').open) { e.preventDefault(); $('search').focus(); } if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && state.tab === 'request' && !$('send-request').disabled) sendRequest(); });
+document.addEventListener('keydown', e => { if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) && !$('edit-dialog').open && !$('auth-dialog').open && !$('environments-dialog').open) { e.preventDefault(); $('search').focus(); } if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && state.tab === 'request' && !$('send-request').disabled) sendRequest(); });
+
+function currentEnvironment() { return state.environments?.environments.find(e => e.id === state.environmentId); }
+function authLabel(auth) { if (!auth || auth.type === 'none') return '无认证'; return auth.type === 'header_bear_auth' ? `${auth.header_name || 'Authorization'}: Bearer …` : `${auth.header_name || 'token'}: …`; }
+function renderEnvironmentSelector() {
+    const select = $('test-environment'); select.replaceChildren(node('option', '', '不使用环境')); select.firstChild.value = '';
+    for (const environment of state.environments?.environments || []) { const option = node('option', '', environment.name); option.value = environment.id; select.append(option); }
+    select.value = state.environmentId; const environment = currentEnvironment();
+    $('environment-description').textContent = environment ? `${Object.keys(environment.variables).length} 个变量 · ${authLabel(environment.auth)}` : '直接填写请求参数';
+    renderRequestAuth();
+}
+function renderRequestAuth() {
+    const mode = $('request-auth-type').value, explicit = ['header_token','header_bear_auth'].includes(mode);
+    $('request-auth-header-wrap').hidden = !explicit; $('request-auth-value-wrap').hidden = !explicit;
+    $('request-auth-summary').textContent = mode === 'environment' ? `环境默认 · ${authLabel(currentEnvironment()?.auth)}` : mode === 'none' ? '仅发送请求头编辑器中的内容' : '';
+}
+function changeRequestAuth() {
+    const mode = $('request-auth-type').value;
+    if (mode === 'header_bear_auth') { $('request-auth-header').value = 'Authorization'; $('request-auth-value').value = '{{BEAR_TOKEN}}'; }
+    if (mode === 'header_token') { $('request-auth-header').value = 'token'; $('request-auth-value').value = '{{TOKEN}}'; }
+    renderRequestAuth();
+}
+function addVariableRow(key = '', value = '') {
+    const row = node('div', 'variable-row'), name = document.createElement('input'), box = node('div', 'variable-value-box'), input = document.createElement('input'), reveal = node('button','text-button','显示'), remove = node('button','icon-button','×');
+    name.value = key; name.placeholder = 'VARIABLE_NAME'; name.autocomplete = 'off'; name.spellcheck = false; name.setAttribute('aria-label','环境变量名');
+    input.value = value; input.type = /token|secret|password|key/i.test(key) ? 'password' : 'text'; input.placeholder = '变量值'; input.autocomplete = 'off'; input.spellcheck = false; input.setAttribute('aria-label',`变量值 ${key}`);
+    reveal.type = remove.type = 'button'; reveal.textContent = input.type === 'password' ? '显示' : '隐藏'; reveal.onclick = () => { input.type = input.type === 'password' ? 'text' : 'password'; reveal.textContent = input.type === 'password' ? '显示' : '隐藏'; };
+    name.onchange = () => { input.setAttribute('aria-label',`变量值 ${name.value}`); if (/token|secret|password|key/i.test(name.value)) { input.type = 'password'; reveal.textContent = '显示'; } };
+    remove.title = '删除变量'; remove.onclick = () => row.remove(); box.append(input,reveal); row.append(name,box,remove); $('variable-rows').append(row); return row;
+}
+function editEnvironment() { return state.environmentEdit?.environments.find(e => e.id === state.environmentEditId); }
+function commitEnvironmentForm() {
+    const environment = editEnvironment(); if (!environment) return;
+    const variables = {};
+    for (const row of $('variable-rows').children) { const name = row.querySelector('input').value.trim(), value = row.querySelector('.variable-value-box input').value; if (!name && !value) continue; if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`环境变量名称无效：${name}`); if (own(variables,name)) throw new Error(`环境变量名称重复：${name}`); Object.defineProperty(variables,name,{value,writable:true,enumerable:true,configurable:true}); }
+    const name = $('environment-name').value.trim(); if (!name) throw new Error('环境名称不能为空');
+    environment.name = name; environment.variables = variables; environment.auth = { type:$('environment-auth-type').value,header_name:$('environment-auth-header').value,value:$('environment-auth-value').value };
+    if ($('environment-default').checked) state.environmentEdit.default_environment = environment.id;
+    else if (state.environmentEdit.default_environment === environment.id) state.environmentEdit.default_environment = '';
+}
+function renderEnvironmentEditor() {
+    const config = state.environmentEdit, environment = editEnvironment(), select = $('environment-edit-select');
+    select.replaceChildren(...config.environments.map(e => { const option = node('option','',e.name); option.value=e.id; return option; })); select.value = state.environmentEditId;
+    $('variable-rows').replaceChildren(); $('environment-name').value = environment?.name || ''; $('environment-name').disabled = !environment;
+    $('environment-auth-type').value = environment?.auth?.type || 'none'; $('environment-auth-header').value = environment?.auth?.header_name || ''; $('environment-auth-value').value = environment?.auth?.value || ''; $('environment-default').checked = Boolean(environment && config.default_environment === environment.id);
+    for (const [key,value] of Object.entries(environment?.variables || {})) addVariableRow(key,value);
+    $('environment-delete').disabled = $('variable-add').disabled = $('environment-auth-type').disabled = $('environment-default').disabled = !environment;
+    renderEnvironmentAuth();
+}
+function renderEnvironmentAuth() { const explicit = ['header_token','header_bear_auth'].includes($('environment-auth-type').value); $('environment-auth-header-wrap').hidden = !explicit; $('environment-auth-value-wrap').hidden = !explicit; }
+async function openEnvironments() {
+    const projectId = state.project.id, done = busy($('manage-environments'),'读取中…');
+    try { const data = await api(projectApi('environments',projectId)); if (state.project.id !== projectId) return; state.environments = data.config; state.environmentRevision = data.revision; state.environmentEdit = JSON.parse(JSON.stringify(data.config)); state.environmentEditId = data.config.environments.some(e => e.id === state.environmentId) ? state.environmentId : data.config.environments[0]?.id || ''; state.environmentEditProject = projectId; state.environmentEditRevision = data.revision; $('environment-error').hidden=true; renderEnvironmentEditor(); $('environments-dialog').showModal(); }
+    catch(e) { toast(e.message,true); } finally { done(); }
+}
+async function saveEnvironmentForm(event) {
+    event.preventDefault(); const done=busy($('save-environments'),'保存中…'); $('environment-error').hidden=true;
+    try { commitEnvironmentForm(); const id=state.environmentEditProject, data=await api(projectApi('environments',id),{method:'PUT',body:{revision:state.environmentEditRevision,config:state.environmentEdit}}); if(state.project.id===id){state.environments=data.config;state.environmentRevision=data.revision;state.environmentId=data.config.environments.some(e=>e.id===state.environmentEditId)?state.environmentEditId:data.config.default_environment;renderEnvironmentSelector();if(state.environmentId)$('base-url').value='{{API_BASE_URL}}';try{localStorage.setItem(`protogen:environment:${state.project.root}`,state.environmentId);}catch{}} $('environments-dialog').close();state.environmentEdit=null;toast('环境配置已保存'); }
+    catch(e){$('environment-error').textContent=e.message;$('environment-error').hidden=false;}finally{done();}
+}
+$('test-environment').onchange = event => { state.environmentId=event.target.value; try{localStorage.setItem(`protogen:environment:${state.project.root}`,state.environmentId);}catch{} if(state.environmentId){$('base-url').value='{{API_BASE_URL}}';}else{try{$('base-url').value=localStorage.getItem(`protogen:base:${state.project.root}`)||'';}catch{$('base-url').value='';}}renderEnvironmentSelector(); };
+$('manage-environments').onclick=openEnvironments;
+$('request-auth-type').onchange=changeRequestAuth;
+$('environment-edit-select').onchange=event=>{try{commitEnvironmentForm();state.environmentEditId=event.target.value;$('environment-error').hidden=true;renderEnvironmentEditor();}catch(e){event.target.value=state.environmentEditId;$('environment-error').textContent=e.message;$('environment-error').hidden=false;}};
+$('environment-add').onclick=()=>{try{commitEnvironmentForm();const id=`env_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;state.environmentEdit.environments.push({id,name:'新环境',variables:{API_BASE_URL:'',TOKEN:'',BEAR_TOKEN:''},auth:{type:'none',header_name:'',value:''}});state.environmentEditId=id;renderEnvironmentEditor();$('environment-name').focus();}catch(e){$('environment-error').textContent=e.message;$('environment-error').hidden=false;}};
+$('environment-delete').onclick=()=>{const id=state.environmentEditId;state.environmentEdit.environments=state.environmentEdit.environments.filter(e=>e.id!==id);if(state.environmentEdit.default_environment===id)state.environmentEdit.default_environment=state.environmentEdit.environments[0]?.id||'';state.environmentEditId=state.environmentEdit.environments[0]?.id||'';renderEnvironmentEditor();};
+$('variable-add').onclick=()=>addVariableRow().querySelector('input').focus();
+$('environment-auth-type').onchange=()=>{const mode=$('environment-auth-type').value;if(mode==='header_token'){$('environment-auth-header').value='token';$('environment-auth-value').value='{{TOKEN}}';}if(mode==='header_bear_auth'){$('environment-auth-header').value='Authorization';$('environment-auth-value').value='{{BEAR_TOKEN}}';}renderEnvironmentAuth();};
+$('environments-form').onsubmit=saveEnvironmentForm;
+$('close-environments').onclick=$('cancel-environments').onclick=()=>{$('environments-dialog').close();state.environmentEdit=null;};
+
 boot();

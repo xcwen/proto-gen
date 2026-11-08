@@ -3,3 +3,6 @@
 /dist/
 /dist-tools/
 /.tools/
+
+# Local protocol request environments and credentials
+proto/web.environments.local.json

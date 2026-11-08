@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 use workspace_proto_gen::{compiler, web::App};
 fn put(root: &Path, name: &str, value: &str) {
     let p = root.join(name);
@@ -371,4 +371,165 @@ async fn streaming_preview_returns_partial_data_at_the_wait_limit() {
     assert_eq!(result["body"], "data: first\n\n");
     task.abort();
     stream.abort();
+}
+
+#[tokio::test]
+async fn environment_variables_authentication_and_local_persistence() {
+    use axum::{extract::Request, routing::any, Router};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = format!("http://{}", listener.local_addr().unwrap());
+    let echo = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().fallback(any(|req: Request| async move {
+                let uri = req.uri().to_string();
+                let headers: BTreeMap<String, String> = req
+                    .headers()
+                    .iter()
+                    .filter(|(k, _)| {
+                        ["token", "authorization", "x-token", "x-note"].contains(&k.as_str())
+                    })
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap().into()))
+                    .collect();
+                let bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap();
+                axum::Json(
+                    json!({"uri":uri,"headers":headers,"body":String::from_utf8_lossy(&bytes)}),
+                )
+            })),
+        )
+        .await
+        .unwrap()
+    });
+    let d = fixture();
+    let config = d.path().join("proto/generator.toml");
+    let (base, task) = server(App::new(std::slice::from_ref(&config), None, true).unwrap()).await;
+    let client = reqwest::Client::new();
+    let token = csrf(&client, &base).await;
+    let url = format!("{base}/api/projects/0/environments");
+    let initial = client
+        .get(&url)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(initial["config"]["environments"][0]["name"], "正式环境");
+    assert!(!d.path().join("proto/web.environments.local.json").exists());
+    let mut settings = initial["config"].clone();
+    settings["environments"][0]["variables"] = json!({"API_BASE_URL":upstream,"TOKEN":"release-token","BEAR_TOKEN":"release-bear","TEXT":"quote \" and slash","LIMIT":"10","ACTIVE":"false","NEXT":"{{TOKEN}}"});
+    settings["environments"][0]["auth"] =
+        json!({"type":"header_token","header_name":"token","value":"{{TOKEN}}"});
+    settings["environments"][1]["variables"] =
+        json!({"API_BASE_URL":upstream,"TOKEN":"test-token","BEAR_TOKEN":"test-bear"});
+    settings["environments"][1]["auth"] =
+        json!({"type":"header_bear_auth","header_name":"Authorization","value":"{{BEAR_TOKEN}}"});
+    let update = json!({"revision":initial["revision"],"config":settings});
+    assert_eq!(
+        client
+            .put(&url)
+            .json(&update)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let saved = client
+        .put(&url)
+        .header("x-proto-csrf", &token)
+        .json(&update)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), 200);
+    let saved = saved.json::<Value>().await.unwrap();
+    assert_eq!(
+        client
+            .put(&url)
+            .header("x-proto-csrf", &token)
+            .json(&update)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    let on_disk = fs::read_to_string(d.path().join("proto/web.environments.local.json")).unwrap();
+    assert!(on_disk.contains("release-token"));
+    async fn send(
+        client: &reqwest::Client,
+        base: &str,
+        token: &str,
+        input: Value,
+    ) -> reqwest::Response {
+        client
+            .post(format!("{base}/api/projects/0/request"))
+            .header("x-proto-csrf", token)
+            .multipart(reqwest::multipart::Form::new().text("request", input.to_string()))
+            .send()
+            .await
+            .unwrap()
+    }
+    let input = json!({"source":"demo/job__list.proto","base_url":"{{API_BASE_URL}}","path":"/echo","method":"POST","query":{"next":"{{NEXT}}"},"headers":{"X-Note":"{{TOKEN}}"},"body":"{\"token\":\"{{TOKEN}}\",\"text\":\"{{TEXT}}\",\"limit\":{{LIMIT}},\"active\":{{ACTIVE}}}","content_type":"application/json","timeout_seconds":3,"environment":"release","environment_revision":saved["revision"],"auth":{"type":"environment"}});
+    let result = send(&client, &base, &token, input.clone())
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(result["status"], 200);
+    let body: Value = serde_json::from_str(result["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["headers"]["token"], "release-token");
+    assert_eq!(body["headers"]["x-note"], "release-token");
+    let payload: Value = serde_json::from_str(body["body"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["limit"], 10);
+    assert_eq!(payload["active"], false);
+    assert_eq!(payload["text"], "quote \" and slash");
+    let mut test_input = input.clone();
+    test_input["environment"] = json!("test");
+    test_input["query"] = json!({});
+    test_input["headers"] = json!({});
+    test_input["body"] = json!("{}");
+    let result = send(&client, &base, &token, test_input.clone())
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(result["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["headers"]["authorization"], "Bearer test-bear");
+    assert!(body["headers"].get("token").is_none());
+    test_input["auth"] = json!({"type":"header_token","header_name":"X-Token","value":"{{TOKEN}}"});
+    let result = send(&client, &base, &token, test_input.clone())
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(result["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["headers"]["x-token"], "test-token");
+    assert!(body["headers"].get("authorization").is_none());
+    test_input["auth"] = json!({"type":"none"});
+    let result = send(&client, &base, &token, test_input.clone())
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(result["body"].as_str().unwrap()).unwrap();
+    assert!(body["headers"].as_object().unwrap().is_empty());
+    test_input["base_url"] = json!("{{MISSING}}");
+    assert_eq!(
+        send(&client, &base, &token, test_input.clone())
+            .await
+            .status(),
+        400
+    );
+    test_input["environment_revision"] = initial["revision"].clone();
+    assert_eq!(send(&client, &base, &token, test_input).await.status(), 409);
+    workspace_proto_gen::project::run(&config, false).unwrap();
+    let generated = fs::read_to_string(d.path().join("gen/Proto/info.json")).unwrap();
+    assert!(!generated.contains("release-token"));
+    assert!(!generated.contains("API_BASE_URL"));
+    task.abort();
+    echo.abort();
 }

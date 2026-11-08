@@ -39,8 +39,14 @@ for attempt in range(50):
         with urllib.request.urlopen(base+"/api/projects/0/protocols") as response:
             data=json.load(response)
         assert data["protocols"][0]["title"] == "release smoke"
+        with urllib.request.urlopen(base+"/api/projects/0/environments") as response:
+            environments=json.load(response)
+        assert environments["config"]["default_environment"] == "release"
+        assert len(environments["config"]["environments"]) == 2
         with urllib.request.urlopen(base) as response:
-            assert "ProtoGen" in response.read().decode()
+            html=response.read().decode()
+        assert "ProtoGen" in html and 'value="release" selected' in html
+        assert "header_bear_auth" in html
         print("embedded Web smoke passed")
         break
     time.sleep(.1)
