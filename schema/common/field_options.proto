@@ -1,0 +1,46 @@
+syntax = "proto3";
+package common;
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.FieldOptions { FieldMetadata field = 50002; }
+extend google.protobuf.FileOptions { DocFields doc_fields = 50003; }
+
+message FieldMetadata {
+  optional string description = 1;
+  optional string default = 2; // Literal text for string JSON types; JSON text for numbers, bool, collections and objects.
+  reserved "default_json";
+  repeated string examples = 3; // Same literal/JSON text rules as default.
+  reserved "examples_json";
+  optional bool nullable = 4;
+  string description_ref = 5;
+  string template_ref = 6;
+  oneof enum_source {
+    string enum_number = 7; // catalog field_value / fully qualified Proto enum number
+    string enum_str = 8;    // catalog field_name, exact case / Proto enum value name
+  }
+  repeated string enum_json = 9;
+  optional uint64 min_uint = 10;
+  optional uint64 max_uint = 11;
+  optional sint64 min_int = 12;
+  optional sint64 max_int = 13;
+  optional double minimum = 14;
+  optional double maximum = 15;
+  optional uint64 min_length = 16;
+  optional uint64 max_length = 17;
+  optional uint64 min_items = 18;
+  optional uint64 max_items = 19;
+  optional string pattern = 20;
+  optional string format = 21;
+  optional bool upload = 22;
+  FieldMetadata items = 23;
+  bool clear_default = 24;
+  optional Location location = 25;
+  optional string http_name = 26;
+  repeated ClearField clear = 27;
+  bool examples_null = 29; // Include a JSON null example when nullable is true.
+  bool default_null = 28; // Explicit null default, independent of the literal string "null".
+  enum ClearField { CLEAR_DEFAULT = 0; CLEAR_EXAMPLES = 1; CLEAR_ENUM = 2; CLEAR_FORMAT = 3; CLEAR_PATTERN = 4; }
+  enum Location { INHERIT = 0; BODY = 1; QUERY = 2; HEADER = 3; COOKIE = 4; PATH = 5; }
+}
+message DocField { string name = 1; FieldMetadata field = 2; }
+message DocFields { repeated DocField templates = 1; }

@@ -31,14 +31,9 @@ message ApiOptions {
   string config_json = 14;
   int32 command_id = 15;
 
-  // Rust/Go 的 64 位整数 JSON 表示；未设置时沿用各运行时默认值。
-  JsonInt64Policy json_int64 = 16;
-
-  enum JsonInt64Policy {
-    JSON_INT64_UNSPECIFIED = 0;
-    JSON_INT64_STRING = 1;
-    JSON_INT64_NUMBER = 2;
-  }
+  reserved 16;
+  reserved "json_int64"; // 64-bit integers always use JSON strings in Rust/Go.
+  ApiDocumentation docs = 17;
 
   enum Auth {
     AUTH_UNSPECIFIED = 0;
@@ -46,6 +41,17 @@ message ApiOptions {
     SESSION = 2;
     PRIVATE = 3;
   }
+}
+
+message ApiDocumentation {
+  string status = 1;
+  ResponseMode response_mode = 2;
+  string response_content_type = 3;
+  AuthMode auth = 4;
+  string message_field = 5;
+  string response_schema_json = 6;
+  enum ResponseMode { STANDARD_JSON = 0; RAW_JSON = 1; SSE = 2; BINARY = 3; REDIRECT = 4; }
+  enum AuthMode { INHERIT_AUTH = 0; NO_AUTH = 1; }
 }
 
 message HttpOptions {
@@ -69,4 +75,6 @@ message ApiExample {
   string name = 1;
   string request_json = 2;
   string response_json = 3;
+  string summary = 4;
+  string data_json = 5;
 }

@@ -7,7 +7,7 @@ PHP、TypeScript、Rust、Go 共用的协议生成器。只接受新版 `common/
 ## 使用
 
 ```bash
-GENERATOR=$(sh install.sh v0.1.2 .tools/proto-gen)
+GENERATOR=$(sh install.sh v0.2.0 .tools/proto-gen)
 "$GENERATOR" generate --config ../node-core/proto/generator.toml
 "$GENERATOR" generate --config ../node-core/proto/generator.toml --check
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json
@@ -30,7 +30,7 @@ Linux 为 musl 静态链接。包内包含 proto-gen、protoc 35.0、protoc-gen-
 编译器查找顺序为 PROTOC、二进制同目录的 protoc、开发源码的 toolchain/bin/protoc、
 PATH。Go 插件优先使用目标项目 .tools/protoc-gen-go，否则使用工具包自带插件。
 TypeScript 继续使用目标项目 node_modules/.bin/protoc-gen-ts_proto 2.7.0。
-PHP 项目配置为 PHP 文件时仅调用 PHP 读取配置，不调用 PHP 协议生成器。
+项目配置统一读取 proto/config.json，不执行 PHP 配置。
 
 源码开发可使用 ./bin/proto-gen（需要 Rust/Cargo）；tools/install-protoc.sh 安装
 固定版本编译器。Rust 依赖由 Cargo.lock 固定，GitHub 构建使用 Rust 1.97.0。
@@ -49,15 +49,18 @@ controllers = "../src/App/Controllers"
 ```
 
 所有路径相对于 generator.toml。schema 副本必须与本工具的
-`schema/common/api_options.proto` 完全一致；更新时统一同步各仓库。
+`schema/common/api_options.proto`、`field_options.proto` 完全一致；更新时统一同步各仓库。
 协议目录、文件名、消息名称、字段编号和类型决定原有路由/类型映射。
 `http` 通常省略：PHP/Node 不新增方法限制；Rust/Go 保持现有 POST 默认规则。
 PRIVATE 仅允许具备对应认证实现的 PHP 目标。
 
 `title` 和 `auth` 必填；新接口的默认标题可使用完整接口路径，鉴权默认写 SESSION，
-显式 HTTP 方法使用大写枚举。说明字符串及外部 Markdown 原样保留，CFG 配置继续由
-descriptor 中的字段注释生成。`json_int64: JSON_INT64_NUMBER` 在 Rust/Go 中保留
-64 位整数的 JSON number 策略，其余接口继续沿用运行时默认序列化。
+显式 HTTP 方法使用大写枚举。说明字符串及外部 Markdown 原样保留。
+字段元数据使用 `common.field`，文档模板使用 `common.doc_fields`，不再解释 CFG/ENUM 注释。
+字段可省略必须显式声明 optional；集合沿用可省略语义，oneof 保持互斥。
+默认值不决定 required，也不会填充运行时参数。nullable 独立控制 JSON null。
+所有 64 位整数的 JSON 表示统一为字符串，已删除 json_int64 数字策略。
+详见 [字段及配置契约](docs/field-and-project-options.md)、[Apifox 审查及实施说明](docs/apifox-audit-and-design.md)。
 
 ## 安装与检查
 
@@ -80,4 +83,4 @@ cargo test --locked
 测试覆盖：新版选项/optional presence、拒绝旧注释、HTTP 默认值、JSON 整数策略、
 PHP/TS/Go 控制器保护和增量补全、Rust 注册、只读检查、失败不安装及文档转换。
 源码结构：compiler.rs 读取统一模型，fields.rs 生成字段索引，targets.rs 输出各语言，
-controller_edit.rs/controllers.rs 补全控制器，project.rs 负责安装，apifox.rs 生成文档。
+controller_edit.rs/controllers.rs 补全控制器，project.rs 负责安装，openapi.rs 生成并校验完整 OpenAPI 3.1 文档，apifox.rs 构造发布计划并检查官方导入 API 结果。

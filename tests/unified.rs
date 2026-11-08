@@ -129,7 +129,7 @@ fn invalid_controller_rolls_back_all_generated_outputs() {
     );
 }
 #[test]
-fn numeric_json_policy_is_typed_and_old_marker_is_rejected() {
+fn numeric_json_policy_is_rejected_and_64_bit_schema_is_string() {
     let (d, c) = fixture("rust");
     let file = d.path().join("proto/src/root/test__sum.proto");
     let original = fs::read_to_string(&file).unwrap();
@@ -138,13 +138,16 @@ fn numeric_json_policy_is_typed_and_old_marker_is_rejected() {
         original.replace("auth:PUBLIC", "auth:PUBLIC json_int64:JSON_INT64_NUMBER"),
     )
     .unwrap();
-    let w = compiler::compile(&c.source, "rust").unwrap();
-    assert_eq!(
-        w.endpoints[0].runtime_api().metadata["JSON_INT64"],
-        "number"
-    );
-    fs::write(&file, format!("{original}\n//__JSON_INT64: number\n")).unwrap();
     assert!(compiler::compile(&c.source, "rust").is_err());
+    fs::write(&file, original).unwrap();
+    let w = compiler::compile(&c.source, "rust").unwrap();
+    let p = serde_json::from_value(serde_json::json!({"apifox_project_name":"test"})).unwrap();
+    let doc = workspace_proto_gen::openapi::document(&w.endpoints[0], &w, &p).unwrap();
+    assert_eq!(
+        doc["components"]["schemas"]["proto.project.root.test__sum.out.response"]["properties"]
+            ["total"]["type"],
+        "string"
+    );
 }
 #[test]
 fn typescript_additional_methods_reuse_generated_type_imports() {

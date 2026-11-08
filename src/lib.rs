@@ -63,8 +63,12 @@ fn code(text: &str) -> String {
 }
 pub mod compiler;
 pub mod controller_edit;
+pub mod field_model;
 pub mod fields;
+pub mod openapi;
 pub mod project;
+pub mod settings;
+pub mod strip_options;
 pub mod targets;
 pub fn studly(value: &str) -> String {
     value

@@ -60,6 +60,8 @@ pub struct Example {
     pub name: Option<String>,
     pub request_json: Option<String>,
     pub response_json: Option<String>,
+    pub summary: Option<String>,
+    pub data_json: Option<String>,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -91,7 +93,23 @@ pub struct Metadata {
     #[serde(default)]
     pub command_id: i32,
     #[serde(default)]
-    pub json_int64: String,
+    pub docs: Documentation,
+}
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Documentation {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub response_mode: String,
+    #[serde(default)]
+    pub response_content_type: String,
+    #[serde(default)]
+    pub auth: String,
+    #[serde(default)]
+    pub message_field: String,
+    #[serde(default)]
+    pub response_schema_json: String,
 }
 #[derive(Clone, Debug)]
 pub struct Endpoint {
@@ -142,15 +160,6 @@ impl Endpoint {
         if self.config.is_object() {
             meta.insert("CONFIG".into(), self.config.to_string());
         }
-        if ["JSON_INT64_NUMBER", "JSON_INT64_STRING"].contains(&self.meta.json_int64.as_str()) {
-            meta.insert(
-                "JSON_INT64".into(),
-                self.meta
-                    .json_int64
-                    .trim_start_matches("JSON_INT64_")
-                    .to_lowercase(),
-            );
-        }
         crate::Api {
             source: self.source.clone(),
             path: self.path.clone(),
@@ -173,6 +182,9 @@ pub struct Workspace {
     pub endpoints: Vec<Endpoint>,
     pub descriptor: Vec<u8>,
     pub pool: DescriptorPool,
+    pub fields: crate::field_model::Fields,
+    pub rules: Value,
+    pub target: String,
 }
 
 pub fn files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -229,6 +241,13 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         fs::read_to_string(source.join("common/api_options.proto"))? == SCHEMA,
         "common/api_options.proto differs from the pinned generator schema"
     );
+    let field_schema = source.join("common/field_options.proto");
+    if field_schema.exists() {
+        ensure!(
+            fs::read_to_string(field_schema)? == crate::field_model::SCHEMA,
+            "common/field_options.proto differs from the pinned generator schema"
+        );
+    }
     fs::create_dir_all(stage.path().join("common"))?;
     fs::write(stage.path().join("common/api_options.proto"), SCHEMA)?;
     fs::create_dir_all(stage.path().join("google/protobuf"))?;
@@ -236,19 +255,28 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         stage.path().join("google/protobuf/descriptor.proto"),
         DESCRIPTOR_SCHEMA,
     )?;
+    fs::write(
+        stage.path().join("common/field_options.proto"),
+        crate::field_model::SCHEMA,
+    )?;
     let legacy =
         regex::Regex::new(r"(?m)^\s*//\s*__[A-Z_][A-Z_0-9]*\s*:|^\s*```(?:desc|config|in|out)\b")?;
     let package_declaration = regex::Regex::new(r"(?m)^[ \t]*package[ \t]+[A-Za-z_]")?;
+    let removed_policy = regex::Regex::new(r"\b(json_int64|default_json|examples_json)\s*:")?;
     for path in files(&source)? {
         let rel = path
             .strip_prefix(&source)?
             .to_str()
             .context("non-UTF8 path")?
             .replace('\\', "/");
-        if rel == "common/api_options.proto" {
+        if ["common/api_options.proto", "common/field_options.proto"].contains(&rel.as_str()) {
             continue;
         }
         let mut text = fs::read_to_string(&path)?;
+        ensure!(
+            !removed_policy.is_match(&crate::code(&text)),
+            "json_int64/default_json are removed; use JSON strings for 64-bit integers and common.field.default"
+        );
         let is_api = !rel.starts_with("common/");
         let dest = if is_api && target != "typescript" {
             format!("project/{rel}")
@@ -313,12 +341,15 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         .arg("--include_imports")
         .arg("--include_source_info")
         .arg(format!("--descriptor_set_out={}", descriptor.display()))
-        .args(mapped.values());
+        .args(mapped.values())
+        .arg("common/field_options.proto");
     command(&mut cmd)?;
     let pool = DescriptorPool::decode(fs::read(&descriptor)?.as_slice())?;
     let extension = pool
         .get_extension_by_name("common.api")
         .context("missing common.api descriptor")?;
+    let fields = crate::field_model::build(&pool, &source)?;
+    let rules = crate::field_model::rules(&pool, &fields);
     let mut paths = BTreeSet::new();
     for api in &mut endpoints {
         let file = pool.get_file_by_name(&api.staged).unwrap();
@@ -398,6 +429,11 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         api.config = if let Some(s) = &api.meta.config_json {
             let v: Value = serde_json::from_str(s)?;
             ensure!(v.is_object(), "config_json must be an object");
+            ensure!(v.as_object().unwrap().keys().all(|k| k == "return_check"), "config_json only registers runtime return_check; move documentation options to typed metadata");
+            ensure!(
+                v.get("return_check").is_none_or(Value::is_string),
+                "return_check must be a string"
+            );
             v
         } else {
             json!([])
@@ -413,27 +449,20 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
                 extras.insert("http_path".into(), json!(api.path));
             }
         }
-        if !api.meta.export_targets.is_empty() {
-            extras.insert("export_targets".into(), json!(api.meta.export_targets));
-        }
-        if api.meta.deprecated {
-            extras.insert("status".into(), json!("deprecated"));
-        }
-        if let Some(v) = &api.meta.deprecation_message {
-            extras.insert("deprecation_message".into(), json!(v));
-        }
-        for (i, example) in api.meta.examples.iter().enumerate() {
-            let name = example.name.clone().unwrap_or_else(|| (i + 1).to_string());
-            for (key, data) in [
-                ("examples", &example.request_json),
-                ("response_examples", &example.response_json),
-            ] {
-                if let Some(data) = data {
-                    let value: Value = serde_json::from_str(data)?;
-                    let map = extras.entry(key.to_string()).or_insert_with(|| json!({}));
-                    ensure!(map.get(&name).is_none(), "duplicate example");
-                    map[&name] = json!({"summary":name,"value":value});
-                }
+        for example in &api.meta.examples {
+            ensure!(
+                !(example.response_json.is_some() && example.data_json.is_some()),
+                "response_json and data_json are mutually exclusive"
+            );
+            for data in [
+                &example.request_json,
+                &example.response_json,
+                &example.data_json,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let _: Value = serde_json::from_str(data)?;
             }
         }
         if !extras.is_empty() {
@@ -445,37 +474,32 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         if target == "php" {
             api.config = php_arrays(api.config.take());
         }
-        let path = stage.path().join(&api.staged);
-        let mut text = fs::read_to_string(&path)?;
-        let proto = file.file_descriptor_proto();
-        let mut spans = vec![];
-        let offsets: Vec<usize> = std::iter::once(0)
-            .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
-        for loc in &proto.source_code_info.as_ref().unwrap().location {
-            let remove = loc.path == [8, 50001]
-                || (loc.path.len() == 2
-                    && loc.path[0] == 3
-                    && proto.dependency[loc.path[1] as usize] == "common/api_options.proto");
-            if remove {
-                let s = &loc.span;
-                let start = offsets[s[0] as usize] + s[1] as usize;
-                let end = if s.len() == 3 {
-                    offsets[s[0] as usize] + s[2] as usize
-                } else {
-                    offsets[s[2] as usize] + s[3] as usize
-                };
-                spans.push((start, end));
-            }
+    }
+    let registry = pool.get_extension_by_name("common.doc_fields").unwrap();
+    let mut metadata_files = vec![];
+    for (rel, dest) in &mapped {
+        let file = pool.get_file_by_name(dest).unwrap();
+        if file.options().has_extension(&registry) {
+            ensure!(
+                file.messages().len() == 0 && file.enums().len() == 0,
+                "documentation template files cannot contain business types"
+            );
+            metadata_files.push(rel.clone());
+            continue;
         }
-        spans.sort();
-        spans.dedup();
-        for (start, end) in spans.into_iter().rev() {
-            text.replace_range(start..end, "");
-        }
-        fs::write(path, text)?;
+        let path = stage.path().join(dest);
+        let text = fs::read_to_string(&path)?;
+        fs::write(
+            &path,
+            crate::strip_options::strip(&text, file.file_descriptor_proto())?,
+        )?;
+    }
+    for name in metadata_files {
+        let dest = mapped.remove(&name).unwrap();
+        fs::remove_file(stage.path().join(dest))?;
     }
     fs::remove_file(stage.path().join("common/api_options.proto"))?;
+    fs::remove_file(stage.path().join("common/field_options.proto"))?;
     let mut cmd = Command::new(protoc());
     cmd.current_dir(stage.path())
         .arg("-I.")
@@ -506,6 +530,9 @@ pub fn compile(source: &Path, target: &str) -> Result<Workspace> {
         endpoints,
         descriptor,
         pool,
+        fields,
+        rules,
+        target: target.into(),
     })
 }
 pub fn php_arrays(v: Value) -> Value {

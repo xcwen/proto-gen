@@ -1,0 +1,117 @@
+[
+  {
+    "file": "mindshow_openapi/job__ppt_create_by_gpt.proto",
+    "field": "qa_list",
+    "action": "normalized default from dict to list"
+  },
+  {
+    "file": "mindshow_openapi/job__ppt_create_by_gpt.proto",
+    "field": "page_count",
+    "action": "normalized example from str to int"
+  },
+  {
+    "file": "mindshow_openapi/template__list.proto",
+    "field": "preview_img_width",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "mindshow_openapi/template__list.proto",
+    "field": "preview_img_quality",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "card/voice__cur_user_get_voice_file_list.proto",
+    "field": "sn",
+    "action": "removed unused CFG.xx; description retained"
+  },
+  {
+    "file": "mindshow_openapi/gpt__chat_completions.proto",
+    "field": "stream",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "mindshow_openapi/gpt__chat_completions.proto",
+    "field": "enable_search",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_content_by_outline.proto",
+    "field": "stream",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_content_by_outline.proto",
+    "field": "resource_id_list",
+    "action": "normalized default from str to list"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_content_by_outline.proto",
+    "field": "resource_id_list",
+    "action": "normalized example from str to list"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_content_by_outline.proto",
+    "field": "qa_list",
+    "action": "normalized default from dict to list"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_outline_by_topic.proto",
+    "field": "stream",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_outline_by_topic.proto",
+    "field": "resource_id_list",
+    "action": "normalized default from str to list"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_outline_by_topic.proto",
+    "field": "resource_id_list",
+    "action": "normalized example from str to list"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_outline_by_topic.proto",
+    "field": "qa_list",
+    "action": "normalized default from dict to list"
+  },
+  {
+    "file": "mindshow_openapi/gpt__gen_outline_by_topic.proto",
+    "field": "page_count",
+    "action": "normalized example from str to int"
+  },
+  {
+    "file": "mindshow_openapi/gpt__openai_chat_completions.proto",
+    "field": "stream",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "root/gpt__chat_completions.proto",
+    "field": "stream",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "root/gpt__chat_completions.proto",
+    "field": "enable_search",
+    "action": "removed invalid example annotation"
+  },
+  {
+    "file": "root/gpt__chat_completions.proto",
+    "field": "args",
+    "action": "normalized example from str to dict"
+  },
+  {
+    "file": "root/gpt__chat_completions.proto",
+    "field": "get_prompt_flag",
+    "action": "normalized default from int to bool"
+  },
+  {
+    "file": "root/gpt__chat_completions.proto",
+    "field": "get_prompt_flag",
+    "action": "normalized example from int to bool"
+  },
+  {
+    "file": "root/gpt__openai_chat_completions.proto",
+    "field": "stream",
+    "action": "removed invalid example annotation"
+  }
+]

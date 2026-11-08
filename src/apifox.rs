@@ -1,36 +1,16 @@
 //! Apifox export from the committed API manifest and protobuf descriptors.
-use crate::Api;
 use anyhow::{bail, ensure, Context, Result};
-use prost_reflect::{DescriptorPool, FieldDescriptor, Kind, MessageDescriptor};
 use regex::RegexBuilder;
-use serde::Deserialize;
-use serde_json::{json, Map, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::{Map, Value};
 use std::{
-    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
-#[derive(Deserialize)]
-pub struct Config {
-    pub project_list: Vec<Project>,
-}
-#[derive(Deserialize)]
-pub struct Project {
-    pub apifox_project_name: String,
-    #[serde(default)]
-    pub apifox_token: String,
-    pub apifox_project_id: Option<Value>,
-    pub test_apifox_project_id: Option<Value>,
-    #[serde(default)]
-    pub url_replace_cfg: Map<String, Value>,
-    #[serde(default)]
-    pub tag_list: Vec<String>,
-    pub export_tags_flag: Option<bool>,
-    #[serde(default)]
-    pub name: String,
-}
+pub use crate::settings::{Project, Settings as Config};
 
 const HELP: &str = "用法: sync_apifox.sh [--env release|test] [--dry-run] <协议.proto> [...]\n\n默认 release；--dry-run 或 APIFOX_DRY_RUN=1 只预览，不发送请求。\n支持绝对路径、调用目录/仓库根目录相对路径和相对 proto/ 的路径。\n配置读取 proto/config.json（与 Node 版格式一致）。\n同步前先运行 ./gen_proto.sh；本工具不生成协议或重启服务。";
 
@@ -101,154 +81,15 @@ impl Options {
     }
 }
 
-fn comments(field: &FieldDescriptor) -> String {
-    let file = field.parent_file();
-    file.file_descriptor_proto()
-        .source_code_info
-        .as_ref()
-        .and_then(|info| info.location.iter().find(|l| l.path == field.path()))
-        .map(|l| {
-            format!(
-                "{}{}",
-                l.leading_comments.as_deref().unwrap_or(""),
-                l.trailing_comments.as_deref().unwrap_or("")
-            )
-        })
-        .unwrap_or_default()
-        .trim()
-        .to_owned()
-}
-fn field_config(field: &FieldDescriptor) -> Result<(String, Value)> {
-    let text = comments(field);
-    let re = regex::Regex::new(r"CFG=(.*\})")?;
-    if let Some(c) = re.captures(&text) {
-        let cfg = serde_json::from_str(&c[1])
-            .with_context(|| format!("{} CFG 不是有效 JSON", field.full_name()))?;
-        return Ok((re.replace(&text, "").trim().to_owned(), cfg));
-    }
-    Ok((text, json!({})))
-}
-fn message_schema(
-    message: MessageDescriptor,
-    pool: &DescriptorPool,
-    stack: &mut BTreeSet<String>,
-) -> Result<Value> {
-    ensure!(
-        stack.insert(message.full_name().to_owned()),
-        "结构存在循环引用: {}",
-        message.full_name()
-    );
-    let mut properties = Map::new();
-    let mut required = Vec::new();
-    for field in message.fields() {
-        let (mut description, cfg) = field_config(&field)?;
-        if let Some(from) = cfg["from"].as_str() {
-            let common = pool
-                .all_messages()
-                .find(|m| m.name() == "common_field_t")
-                .and_then(|m| m.get_field_by_name(from))
-                .with_context(|| format!("未找到 common_field_t.{from}"))?;
-            description = field_config(&common)?.0;
-        }
-        let mut schema = match field.kind() {
-            Kind::Message(m) if field.is_map() => {
-                let value = m.get_field_by_name("value").context("map missing value")?;
-                json!({"type":"object", "additionalProperties": kind_schema(value.kind(), pool, stack)?})
-            }
-            kind => kind_schema(kind, pool, stack)?,
-        };
-        schema["description"] = json!(description);
-        if let Some(t) = cfg.get("field_type") {
-            schema["type"] = t.clone();
-            if t == "file" {
-                schema["type"] = json!("string");
-                schema["format"] = json!("binary");
-            }
-        }
-        if let Some(default) = cfg.get("default") {
-            schema["default"] = default.clone();
-        } else {
-            required.push(field.name().to_owned());
-        }
-        if let Some(example) = cfg.get("example") {
-            schema["examples"] = json!([example]);
-        }
-        if field.is_list() {
-            schema = json!({"type": if cfg.get("default").is_some() { json!(["array", null]) } else { json!(["array"]) }, "description": description, "items":schema});
-        }
-        properties.insert(field.name().to_owned(), schema);
-    }
-    stack.remove(message.full_name());
-    Ok(json!({"type":"object", "properties":properties,"required":required}))
-}
-fn kind_schema(kind: Kind, pool: &DescriptorPool, stack: &mut BTreeSet<String>) -> Result<Value> {
-    Ok(match kind {
-        Kind::Message(m) => message_schema(m, pool, stack)?,
-        Kind::Bool => json!({"type":"boolean"}),
-        Kind::String => json!({"type":"string"}),
-        Kind::Bytes => json!({"type":"string", "format":"byte"}),
-        Kind::Float | Kind::Double => json!({"type":"number"}),
-        _ => json!({"type":"integer"}),
-    })
-}
-fn input_schema(api: &Api, pool: &DescriptorPool) -> Result<Value> {
-    let name = format!("{}.apidoc_in", api.input.trim_end_matches(".in"));
-    if let Some(message) = pool.get_message_by_name(&name) {
-        let groups: Vec<_> = message.oneofs().filter(|o| !o.is_synthetic()).collect();
-        ensure!(
-            groups.len() == 1 && message.fields().all(|f| f.containing_oneof().is_some()),
-            "{name} 只能包含一个 oneof"
-        );
-        let group = &groups[0];
-        let mut branches = Vec::new();
-        for field in group.fields() {
-            let Kind::Message(m) = field.kind() else {
-                bail!("{name} oneof 必须使用 message 类型");
-            };
-            let mut schema = message_schema(m, pool, &mut BTreeSet::new())?;
-            ensure!(
-                schema["properties"].get(group.name()).is_none(),
-                "oneof 与字段同名: {}",
-                group.name()
-            );
-            schema["properties"][group.name()] = json!({"type":"string", "const":field.name(), "description":field_config(&field)?.0});
-            schema["required"]
-                .as_array_mut()
-                .unwrap()
-                .insert(0, json!(group.name()));
-            schema["x-apifox-orders"] = json!(std::iter::once(group.name().to_owned())
-                .chain(
-                    schema["properties"]
-                        .as_object()
-                        .unwrap()
-                        .keys()
-                        .filter(|k| *k != group.name())
-                        .cloned()
-                )
-                .collect::<Vec<_>>());
-            schema["x-apifox-ignore-properties"] = json!([]);
-            branches.push(schema);
-        }
-        ensure!(!branches.is_empty(), "{name} 未定义有效的 oneof 字段");
-        return Ok(json!({"oneOf":branches}));
-    }
-    message_schema(
-        pool.get_message_by_name(&api.input)
-            .context("缺少输入描述，请先运行 ./gen_proto.sh")?,
-        pool,
-        &mut BTreeSet::new(),
-    )
-}
-
 pub fn api_path(path: &str, replacements: &Map<String, Value>) -> Result<String> {
     let mut path = path.to_owned();
     for (pattern, replacement) in replacements {
-        let Some(body) = pattern.strip_prefix('/') else {
-            continue;
-        };
-        let Some((pattern, flags)) = body.rsplit_once('/') else {
-            continue;
-        };
+        let body = pattern
+            .strip_prefix('/')
+            .context("path regex must be /pattern/flags")?;
+        let (pattern, flags) = body
+            .rsplit_once('/')
+            .context("path regex must be /pattern/flags")?;
         ensure!(
             flags.chars().all(|f| "gimsu".contains(f)),
             "不支持的路径正则标志: {flags}"
@@ -272,73 +113,8 @@ pub fn api_path(path: &str, replacements: &Map<String, Value>) -> Result<String>
     Ok(path)
 }
 
-pub fn document(
-    api: &Api,
-    pool: &DescriptorPool,
-    source: &str,
-    project: &Project,
-) -> Result<Value> {
-    let cfg: Value = api
-        .metadata
-        .get("CONFIG")
-        .map(|s| serde_json::from_str(s))
-        .transpose()?
-        .unwrap_or_else(|| json!({}));
-    let _ = source;
-    let input = input_schema(api, pool)?;
-    let mut output = message_schema(
-        pool.get_message_by_name(&api.output)
-            .context("缺少输出描述，请先运行 ./gen_proto.sh")?,
-        pool,
-        &mut BTreeSet::new(),
-    )?;
-    output["description"] = json!("数据区");
-    let folder = api
-        .metadata
-        .get("PROJECT")
-        .filter(|s| !s.is_empty())
-        .map(String::as_str)
-        .unwrap_or("开发中");
-    let description = api.metadata.get("DESC").cloned().unwrap_or_default();
-    let mut operation = json!({
-        "summary":api.title, "description":description,
-        "x-apifox-folder":folder, "x-apifox-status":cfg.get("status").unwrap_or(&json!("released")),
-        "parameters":cfg.get("parameters").unwrap_or(&json!([])),
-        "requestBody":{"content":{cfg["in_content_type"].as_str().unwrap_or("application/json"):{"schema":input,"examples":cfg.get("examples").unwrap_or(&json!({}))}}},
-        "responses":{"200":{"description":"成功","content":{"application/json":{"schema":{
-            "type":"object","title":"ResponseModel","properties":{
-                "code":{"type":"integer","description":"错误码( 0:成功. 其它值:失败[无data数据区])"},
-                "info":{"type":"string","description":"错误信息","examples":["succ"]},
-                "request_id":{"type":"string","description":"请求id,用于定位请求","examples":["21al1389334aal4f"]},
-                "data":output},"required":["code","info","request_id"]}}}}}
-    });
-    if project.export_tags_flag != Some(false) {
-        let mut tags = tags(api);
-        if folder != "开发中" {
-            tags.push(format!("PROJECT:{folder}"));
-        }
-        tags.push("rust".into());
-        let mut seen = BTreeSet::new();
-        tags.retain(|t| seen.insert(t.clone()));
-        operation["tags"] = json!(tags);
-    }
-    let path = api_path(&api.path, &project.url_replace_cfg)?;
-    // Use the generated HTTP method so the document matches Rust's registered routes.
-    Ok(
-        json!({"openapi":if input.get("oneOf").is_some() {"3.1.0"} else {"3.0.1"},
-        "paths":{path:{api.method.to_lowercase():operation}}}),
-    )
-}
-fn tags(api: &Api) -> Vec<String> {
-    api.metadata
-        .get("TAGS")
-        .into_iter()
-        .flat_map(|s| s.split(','))
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
+pub use crate::openapi::document;
+
 fn project_id(project: &Project, env: &str) -> Option<String> {
     let value = if env == "release" {
         &project.apifox_project_id
@@ -357,50 +133,48 @@ pub fn validate_response(status: u16, body: &str) -> Result<()> {
     ensure!((200..300).contains(&status), "Apifox 返回 HTTP {status}");
     let value: Value = serde_json::from_str(body).context("Apifox 返回非 JSON 响应")?;
     ensure!(
-        value["success"] == true,
-        "Apifox 未确认导入成功，请检查项目权限和配置"
+        value.get("success").is_none_or(|v| v == true),
+        "Apifox 未确认导入成功"
     );
+    let counters = value["data"]["counters"]
+        .as_object()
+        .context("Apifox 缺少导入结果 counters")?;
+    let mut changed = 0u64;
+    for (key, value) in counters {
+        let count = value.as_u64().context("Apifox 返回无效计数")?;
+        ensure!(
+            !key.ends_with("Failed") || count == 0,
+            "Apifox 导入存在失败项: {key}={count}"
+        );
+        if matches!(key.as_str(), "endpointCreated" | "endpointUpdated") {
+            changed = changed.saturating_add(count);
+        }
+    }
+    ensure!(
+        counters.get("endpointFailed").and_then(Value::as_u64) == Some(0),
+        "Apifox 缺少接口失败计数"
+    );
+    ensure!(changed > 0, "Apifox 未创建或更新任何接口");
     Ok(())
 }
 async fn sync(client: &reqwest::Client, project: &Project, id: &str, data: &Value) -> Result<()> {
-    let endpoint = format!("https://api.apifox.cn/api/v1/projects/{id}/import-data?locale=zh-CN");
+    let endpoint = format!("https://api.apifox.com/v1/projects/{id}/import-openapi?locale=zh-CN");
     sync_endpoint(client, project, id, data, &endpoint).await
 }
 async fn sync_endpoint(
     client: &reqwest::Client,
     project: &Project,
-    id: &str,
+    _id: &str,
     data: &Value,
     endpoint: &str,
 ) -> Result<()> {
-    let form = [
-        ("importFormat", "openapi"),
-        ("importBasePath", "false"),
-        ("importFullPath", "false"),
-        ("ignoreEnvironment", "false"),
-        ("apiFolderId", "0"),
-        ("schemaFolderId", "0"),
-        ("testSuiteFolderId", "0"),
-        ("testCaseFolderId", "0"),
-        ("apiOverwriteMode", "name"),
-        ("schemaOverwriteMode", "ignore"),
-        ("docOverwriteMode", "ignore"),
-        ("testSuiteOverwriteMode", "ignore"),
-        ("testCaseOverwriteMode", "ignore"),
-        ("data", &serde_json::to_string(data)?),
-        ("autoImport", "true"),
-        ("autoImportId", ""),
-        ("url", ""),
-        ("auth", ""),
-        ("syncApiFolder", ""),
-    ];
+    let payload = serde_json::json!({"input":serde_json::to_string(data)?,"options":project.import_options.payload()});
     let response = client
         .post(endpoint)
-        .header("X-Project-Id", id)
-        .header("X-Apifox-Version", "2022-11-16")
+        .header("X-Apifox-Api-Version", "2024-03-28")
         .bearer_auth(&project.apifox_token)
         .header("User-Agent", "Apifox/1.0.0 (https://www.apifox.cn)")
-        .form(&form)
+        .json(&payload)
         .send()
         .await
         .context("Apifox 请求失败")?;
@@ -423,38 +197,9 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
     let Some(options) = Options::parse(args, &root, &std::env::current_dir()?)? else {
         return Ok(());
     };
-    let config: Config = if generator.php() {
-        let value: Value = serde_json::from_slice(&crate::compiler::command(
-            std::process::Command::new("php")
-                .arg("-r")
-                .arg("echo json_encode(require $argv[1], JSON_THROW_ON_ERROR);")
-                .arg(root.join("proto/config.php")),
-        )?)?;
-        Config {
-            project_list: value["export"]
-                .as_object()
-                .map(|m| {
-                    m.iter()
-                        .map(|(name, v)| {
-                            let mut v = v.clone();
-                            v["name"] = json!(name);
-                            serde_json::from_value(v)
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .unwrap_or_default(),
-        }
-    } else {
-        serde_json::from_slice(&fs::read(root.join("proto/config.json"))?)?
-    };
+    let config = Config::load(generator.source.parent().unwrap())?;
     let workspace = crate::compiler::compile(&generator.source, &generator.target)?;
-    let apis: Vec<_> = workspace
-        .endpoints
-        .iter()
-        .map(|a| a.runtime_api())
-        .collect();
-    let pool = workspace.pool;
+    let apis = &workspace.endpoints;
     // Preflight every protocol/project before the first remote write.
     let mut jobs = Vec::new();
     for file in &options.files {
@@ -466,21 +211,20 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
             .iter()
             .find(|a| a.source == rel)
             .with_context(|| format!("未找到 {rel}，请先运行 ./gen_proto.sh"))?;
-        let tags = tags(api);
-        let settings: Value = api
-            .metadata
-            .get("CONFIG")
-            .map(|s| serde_json::from_str(s))
-            .transpose()?
-            .unwrap_or_else(|| json!({}));
-        let targets = settings.get("export_targets").and_then(Value::as_array);
+        let tags = api.meta.tags.clone();
+        let explicit_targets = &api.meta.export_targets;
+        let targets = if explicit_targets.is_empty() {
+            None
+        } else {
+            Some(explicit_targets)
+        };
         if let Some(targets) = targets {
             for t in targets {
                 ensure!(
-                    t.as_str().is_some_and(|n| config
+                    config
                         .project_list
                         .iter()
-                        .any(|p| p.name == n || p.apifox_project_name == n)),
+                        .any(|p| p.name == *t || p.apifox_project_name == *t),
                     "未配置的导出目标"
                 );
             }
@@ -492,10 +236,8 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
                 !p.apifox_token.is_empty()
                     && targets
                         .map(|ts| {
-                            ts.iter().any(|t| {
-                                t.as_str() == Some(&p.name)
-                                    || t.as_str() == Some(&p.apifox_project_name)
-                            })
+                            ts.iter()
+                                .any(|t| t == &p.name || t == &p.apifox_project_name)
                         })
                         .unwrap_or_else(|| p.tag_list.iter().any(|t| tags.contains(t)))
             })
@@ -513,28 +255,38 @@ pub async fn run_config(args: Vec<String>, config_path: &Path) -> Result<()> {
                 .join(",")
         );
         for project in projects {
-            let Some(id) = project_id(project, &options.env) else {
-                println!(
-                    "跳过: {} 缺少 {}",
-                    project.apifox_project_name,
-                    if options.env == "release" {
-                        "apifox_project_id"
-                    } else {
-                        "test_apifox_project_id"
-                    }
-                );
-                continue;
-            };
+            let id = project_id(project, &options.env).with_context(|| {
+                format!(
+                    "selected project {} has no {} project ID",
+                    project.apifox_project_name, options.env
+                )
+            })?;
             ensure!(
-                id.chars().all(|c| c.is_ascii_digit()),
+                id.chars().all(|c| c.is_ascii_digit()) && id.parse::<u64>().is_ok_and(|v| v > 0),
                 "Apifox 项目 ID 必须为数字"
             );
             jobs.push((
                 rel.to_owned(),
                 project,
                 id,
-                document(api, &pool, &fs::read_to_string(file)?, project)?,
+                document(api, &workspace, project)?,
             ));
+        }
+    }
+    let mut identities = std::collections::BTreeSet::new();
+    for (_, project, id, doc) in &jobs {
+        for (path, methods) in doc["paths"].as_object().unwrap() {
+            for method in methods.as_object().unwrap().keys() {
+                ensure!(
+                    identities.insert((
+                        id.clone(),
+                        serde_json::to_string(&project.import_options.payload())?,
+                        method.clone(),
+                        path.clone()
+                    )),
+                    "duplicate method + published path in selected target"
+                );
+            }
         }
     }
     let client = reqwest::Client::builder()
@@ -644,92 +396,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn exports_descriptors_cfg_common_fields_oneof_and_metadata() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("proto/src");
-        fs::create_dir_all(source.join("demo")).unwrap();
-        fs::create_dir_all(source.join("common")).unwrap();
-        fs::write(
-            source.join("common/common.proto"),
-            r#"syntax="proto3";
-package common;
-message common_field_t {
-  string title=1; // 公共标题 CFG={"example":"shared"}
-}
-message Item {
-  string title=1; // 本地描述 CFG={"from":"title", "default":"", "example":"local"}
-}
-"#,
-        )
-        .unwrap();
-        let text = r#"syntax="proto3";
-import "common/common.proto";
-import "common/api_options.proto";
-option (common.api) = {
- title:"测试接口" auth:SESSION tags:"demo" tags:"other" project:"测试项目"
- description:"多行描述\n"
- config_json:'{"status":"developing","examples":{"one":{"value":{}}}}'
-};
-message in {}
-message Branch {
-  repeated common.Item items=1; // 数据 CFG={"default":[]}
-  bytes image=2; // 上传 CFG={"field_type":"file"}
-}
-message apidoc_in {
-  oneof kind { Branch create=1; }
-}
-message out {
-  common.Item item=1;
-}
-"#;
-        fs::write(
-            source.join("common/api_options.proto"),
-            crate::compiler::SCHEMA,
-        )
-        .unwrap();
-        fs::write(source.join("demo/a__get.proto"), text).unwrap();
-        let output = temp.path().join("generated");
-        crate::generate(&source, &output).unwrap();
-        let apis: Vec<Api> =
-            serde_json::from_slice(&fs::read(output.join("api.json")).unwrap()).unwrap();
-        let pool =
-            DescriptorPool::decode(fs::read(output.join("descriptor.bin")).unwrap().as_slice())
-                .unwrap();
-        let mut p = project();
-        let doc = document(&apis[0], &pool, text, &p).unwrap();
-        assert_eq!(doc["openapi"], "3.1.0");
-        let op = &doc["paths"]["/v1/a/get"]["post"];
-        assert_eq!(op["x-apifox-folder"], "测试项目");
-        assert_eq!(op["x-apifox-status"], "developing");
-        assert!(op["description"].as_str().unwrap().contains("多行描述"));
-        assert_eq!(
-            op["tags"],
-            json!(["demo", "other", "PROJECT:测试项目", "rust"])
-        );
-        let branch = &op["requestBody"]["content"]["application/json"]["schema"]["oneOf"][0];
-        assert_eq!(branch["properties"]["kind"]["const"], "create");
-        assert_eq!(branch["required"], json!(["kind", "image"]));
-        assert_eq!(
-            branch["properties"]["items"]["type"],
-            json!(["array", null])
-        );
-        let title = &branch["properties"]["items"]["items"]["properties"]["title"];
-        assert_eq!(title["description"], "公共标题");
-        assert_eq!(title["examples"], json!(["local"]));
-        assert_eq!(branch["properties"]["image"]["format"], "binary");
-        assert_eq!(
-            op["responses"]["200"]["content"]["application/json"]["schema"]["required"],
-            json!(["code", "info", "request_id"])
-        );
-        p.export_tags_flag = Some(false);
-        assert!(
-            document(&apis[0], &pool, text, &p).unwrap()["paths"]["/v1/a/get"]["post"]
-                .get("tags")
-                .is_none()
-        );
-    }
-
     #[tokio::test]
     async fn import_request_and_response_failures() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -763,11 +429,17 @@ message out {
             let raw = String::from_utf8(request).unwrap();
             assert!(raw.starts_with("POST /import-data HTTP/1.1"));
             assert!(raw.contains("authorization: Bearer test-token"));
-            assert!(raw.contains("x-project-id: 123"));
-            assert!(raw.contains("application/x-www-form-urlencoded"));
-            assert!(raw.contains("apiOverwriteMode=name"));
-            assert!(raw.contains("data=%7B%22openapi%22%3A%223.0.1%22%7D"));
-            let body = r#"{"success":true,"data":{}}"#;
+            assert!(raw.contains("x-apifox-api-version: 2024-03-28"));
+            assert!(raw.contains("application/json"));
+            let payload: Value =
+                serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(
+                payload["options"]["schemaOverwriteBehavior"],
+                "OVERWRITE_EXISTING"
+            );
+            assert_eq!(payload["options"]["deleteUnmatchedResources"], false);
+            assert_eq!(payload["input"], r#"{"openapi":"3.1.0"}"#);
+            let body = r#"{"data":{"counters":{"endpointCreated":1,"endpointUpdated":0,"endpointFailed":0,"schemaFailed":0}}}"#;
             socket
                 .write_all(
                     format!(
@@ -783,12 +455,20 @@ message out {
             &reqwest::Client::new(),
             &project(),
             "123",
-            &json!({"openapi":"3.0.1"}),
+            &json!({"openapi":"3.1.0"}),
             &endpoint,
         )
         .await
         .unwrap();
         server.await.unwrap();
+        for body in [
+            r#"{"success":true}"#,
+            r#"{"data":{"counters":{"endpointCreated":1,"endpointFailed":1}}}"#,
+            r#"{"data":{"counters":{"endpointCreated":1,"endpointFailed":0,"schemaFailed":1}}}"#,
+            r#"{"data":{"counters":{"endpointIgnored":1,"endpointFailed":0}}}"#,
+        ] {
+            assert!(validate_response(200, body).is_err());
+        }
         assert!(validate_response(401, r#"{"success":false}"#).is_err());
         assert!(validate_response(200, r#"{"success":false}"#).is_err());
         assert!(validate_response(200, "<html>error</html>").is_err());

@@ -55,24 +55,6 @@ fn node_type(t: &str) -> String {
         _ => t.into(),
     }
 }
-fn cfg(desc: String, php: bool) -> Result<(String, Map<String, Value>)> {
-    let mut rules = Map::new();
-    let re = regex::Regex::new(r"CFG=(.*\})")?;
-    if let Some(c) = re.captures(&desc) {
-        let value: Value = serde_json::from_str(&c[1]).context("invalid CFG JSON")?;
-        rules.insert(
-            "cfg".into(),
-            if php {
-                crate::compiler::php_arrays(value)
-            } else {
-                value
-            },
-        );
-        let clean = re.replace(&desc, "").to_string();
-        return Ok((if php { clean } else { clean.trim().into() }, rules));
-    }
-    Ok((desc, rules))
-}
 fn key(file: &FileDescriptorProto, msg: &str, php: bool) -> String {
     if php {
         if file.name().starts_with("common/") {
@@ -102,6 +84,7 @@ fn message(
     name: &str,
     path: &[i32],
     php: bool,
+    models: &crate::field_model::Fields,
 ) -> Result<()> {
     let mut rows = vec![];
     for (i, f) in msg.field.iter().enumerate() {
@@ -111,7 +94,40 @@ fn message(
         }
         let mut p = path.to_vec();
         p.extend([2, i as i32]);
-        let (desc, mut rules) = cfg(comment(file, &p, php), php)?;
+        let full = format!("{}.{name}.{}", file.package(), f.name());
+        let model = models
+            .get(&full)
+            .with_context(|| format!("missing resolved metadata {full}"))?;
+        let desc = if php {
+            model.description.replace('@', "\\@")
+        } else {
+            model.description.clone()
+        };
+        let mut cfg = Map::new();
+        if let Some(v) = &model.default {
+            cfg.insert("default".into(), v.clone());
+        }
+        if let Some(v) = model.examples.first() {
+            cfg.insert("example".into(), v.clone());
+        }
+        if let Some(v) = &model.enum_values {
+            cfg.insert("enum".into(), json!(v));
+        }
+        if model.options["upload"] == true {
+            cfg.insert("field_type".into(), json!("file"));
+        }
+        let mut rules = Map::new();
+        if !cfg.is_empty() {
+            rules.insert(
+                "cfg".into(),
+                if php {
+                    crate::compiler::php_arrays(json!(cfg))
+                } else {
+                    json!(cfg)
+                },
+            );
+        }
+
         if let Some(index) = oneof {
             rules.insert("oneof".into(), json!(msg.oneof_decl[index as usize].name()));
         }
@@ -170,7 +186,15 @@ fn message(
         }
         let mut p = path.to_vec();
         p.extend([3, i as i32]);
-        message(map, file, n, &format!("{name}.{}", n.name()), &p, php)?;
+        message(
+            map,
+            file,
+            n,
+            &format!("{name}.{}", n.name()),
+            &p,
+            php,
+            models,
+        )?;
     }
     Ok(())
 }
@@ -212,7 +236,15 @@ pub fn struct_map(
     for file in workspace.pool.files() {
         let f = file.file_descriptor_proto();
         for (i, m) in f.message_type.iter().enumerate() {
-            message(&mut map, f, m, m.name(), &[4, i as i32], php)?;
+            message(
+                &mut map,
+                f,
+                m,
+                m.name(),
+                &[4, i as i32],
+                php,
+                &workspace.fields,
+            )?;
         }
         for (i, e) in f.enum_type.iter().enumerate() {
             enumeration(&mut map, f, e, &[5, i as i32], php);

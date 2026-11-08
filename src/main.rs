@@ -45,23 +45,25 @@ fn run() -> Result<()> {
                 serde_json::json!({"apifox_project_name":"local","url_replace_cfg":{},"tag_list":[]}),
             )?;
             let mut paths = serde_json::Map::new();
+            let mut schemas = serde_json::Map::new();
             for a in &w.endpoints {
-                let mut doc =
-                    workspace_proto_gen::apifox::document(&a.runtime_api(), &w.pool, "", &project)?;
-                for op in doc["paths"].as_object_mut().unwrap().values_mut() {
-                    for o in op.as_object_mut().unwrap().values_mut() {
-                        if let Some(tags) = o["tags"].as_array_mut() {
-                            for t in tags {
-                                if t == "rust" {
-                                    *t = serde_json::json!(c.target);
-                                }
-                            }
-                        }
+                let doc = workspace_proto_gen::apifox::document(a, &w, &project)?;
+                for (path, methods) in doc["paths"].as_object().unwrap() {
+                    let target = paths
+                        .entry(path.clone())
+                        .or_insert_with(|| serde_json::json!({}));
+                    for (method, operation) in methods.as_object().unwrap() {
+                        anyhow::ensure!(
+                            target.get(method).is_none(),
+                            "duplicate published method and path"
+                        );
+                        target[method] = operation.clone();
                     }
                 }
-                paths.extend(doc["paths"].as_object().unwrap().clone());
+                schemas.extend(doc["components"]["schemas"].as_object().unwrap().clone());
             }
-            let doc = serde_json::json!({"openapi":"3.1.0","info":{"title":"Generated API","version":"1"},"paths":paths});
+            let doc = serde_json::json!({"openapi":"3.1.0","info":{"title":"Generated API","version":"1"},"paths":paths,"components":{"schemas":schemas}});
+            workspace_proto_gen::openapi::validate_document(&doc)?;
             workspace_proto_gen::project::put(
                 &out.context("--out is required")?,
                 serde_json::to_vec_pretty(&doc)?,
