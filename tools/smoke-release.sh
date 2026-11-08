@@ -47,6 +47,9 @@ for attempt in range(50):
             html=response.read().decode()
         assert "ProtoGen" in html and 'value="release" selected' in html
         assert "header_bear_auth" in html
+        assert 'value="">不使用环境' not in html
+        assert 'data-result="html"' in html
+        assert 'id="response-html"' in html
         print("embedded Web smoke passed")
         break
     time.sleep(.1)
