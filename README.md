@@ -7,7 +7,7 @@ PHP、TypeScript、Rust、Go 共用的协议生成器。只接受新版 `common/
 ## 使用
 
 ```bash
-GENERATOR=$(sh install.sh v0.3.0 .tools/proto-gen)
+GENERATOR=$(sh install.sh v0.3.1 .tools/proto-gen)
 "$GENERATOR" generate --config ../node-core/proto/generator.toml
 "$GENERATOR" generate --config ../node-core/proto/generator.toml --check
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json

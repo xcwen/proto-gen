@@ -139,22 +139,34 @@ pub fn validate_response(status: u16, body: &str) -> Result<()> {
     let counters = value["data"]["counters"]
         .as_object()
         .context("Apifox 缺少导入结果 counters")?;
-    let mut changed = 0u64;
+    let mut processed = false;
     for (key, value) in counters {
         let count = value.as_u64().context("Apifox 返回无效计数")?;
         ensure!(
             !key.ends_with("Failed") || count == 0,
             "Apifox 导入存在失败项: {key}={count}"
         );
-        if matches!(key.as_str(), "endpointCreated" | "endpointUpdated") {
-            changed = changed.saturating_add(count);
+        if matches!(
+            key.as_str(),
+            "endpointCreated" | "endpointUpdated" | "endpointIgnored"
+        ) && count > 0
+        {
+            processed = true;
         }
     }
     ensure!(
         counters.get("endpointFailed").and_then(Value::as_u64) == Some(0),
         "Apifox 缺少接口失败计数"
     );
-    ensure!(changed > 0, "Apifox 未创建或更新任何接口");
+    // A complete zero result is a valid no-op when importing an unchanged document.
+    // Missing/incomplete results must still fail instead of being mistaken for a no-op.
+    let complete_result = ["endpointCreated", "endpointUpdated", "endpointIgnored"]
+        .iter()
+        .all(|key| counters.get(*key).and_then(Value::as_u64).is_some());
+    ensure!(
+        processed || complete_result,
+        "Apifox 缺少完整的接口处理结果"
+    );
     Ok(())
 }
 pub async fn sync(
@@ -446,76 +458,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unchanged_imports_are_successful_when_apifox_reports_processed_endpoints() {
+        for counters in [
+            json!({"endpointCreated":1,"endpointFailed":0}),
+            json!({"endpointUpdated":1,"endpointFailed":0}),
+            json!({"endpointCreated":0,"endpointUpdated":0,"endpointIgnored":1,"endpointFailed":0}),
+            json!({"endpointCreated":0,"endpointUpdated":0,"endpointIgnored":0,"endpointFailed":0}),
+        ] {
+            validate_response(200, &json!({"data":{"counters":counters}}).to_string()).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn import_request_and_response_failures() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/import-data", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut buf = [0; 4096];
-                let n = socket.read(&mut buf).await.unwrap();
-                assert!(n > 0);
-                request.extend_from_slice(&buf[..n]);
-                let raw = String::from_utf8_lossy(&request);
-                if let Some((headers, body)) = raw.split_once("\r\n\r\n") {
-                    let length: usize = headers
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .map(str::to_owned)
-                        })
-                        .unwrap()
-                        .parse()
-                        .unwrap();
-                    if body.len() >= length {
-                        break;
+            for attempt in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let n = socket.read(&mut buf).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buf[..n]);
+                    let raw = String::from_utf8_lossy(&request);
+                    if let Some((headers, body)) = raw.split_once("\r\n\r\n") {
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .map(str::to_owned)
+                            })
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        if body.len() >= length {
+                            break;
+                        }
                     }
                 }
-            }
-            let raw = String::from_utf8(request).unwrap();
-            assert!(raw.starts_with("POST /import-data HTTP/1.1"));
-            assert!(raw.contains("authorization: Bearer test-token"));
-            assert!(raw.contains("x-apifox-api-version: 2024-03-28"));
-            assert!(raw.contains("application/json"));
-            let payload: Value =
-                serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
-            assert_eq!(
-                payload["options"]["schemaOverwriteBehavior"],
-                "OVERWRITE_EXISTING"
-            );
-            assert_eq!(payload["options"]["deleteUnmatchedResources"], false);
-            assert_eq!(payload["input"], r#"{"openapi":"3.1.0"}"#);
-            let body = r#"{"data":{"counters":{"endpointCreated":1,"endpointUpdated":0,"endpointFailed":0,"schemaFailed":0}}}"#;
-            socket
-                .write_all(
-                    format!(
+                let raw = String::from_utf8(request).unwrap();
+                assert!(raw.starts_with("POST /import-data HTTP/1.1"));
+                assert!(raw.contains("authorization: Bearer test-token"));
+                assert!(raw.contains("x-apifox-api-version: 2024-03-28"));
+                assert!(raw.contains("application/json"));
+                let payload: Value =
+                    serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+                assert_eq!(
+                    payload["options"]["schemaOverwriteBehavior"],
+                    "OVERWRITE_EXISTING"
+                );
+                assert_eq!(payload["options"]["deleteUnmatchedResources"], false);
+                assert_eq!(payload["input"], r#"{"openapi":"3.1.0"}"#);
+                let body = if attempt == 0 {
+                    r#"{"data":{"counters":{"endpointCreated":1,"endpointUpdated":0,"endpointIgnored":0,"endpointFailed":0,"schemaFailed":0}}}"#
+                } else if attempt == 1 {
+                    r#"{"data":{"counters":{"endpointCreated":0,"endpointUpdated":0,"endpointIgnored":1,"endpointFailed":0,"schemaFailed":0}}}"#
+                } else {
+                    r#"{"data":{"counters":{"endpointCreated":0,"endpointUpdated":0,"endpointIgnored":0,"endpointFailed":0,"schemaFailed":0}}}"#
+                };
+                socket
+                    .write_all(
+                        format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
         });
-        sync_endpoint(
-            &reqwest::Client::new(),
-            &project(),
-            "123",
-            &json!({"openapi":"3.1.0"}),
-            &endpoint,
-        )
-        .await
-        .unwrap();
+        for _ in 0..3 {
+            sync_endpoint(
+                &reqwest::Client::new(),
+                &project(),
+                "123",
+                &json!({"openapi":"3.1.0"}),
+                &endpoint,
+            )
+            .await
+            .unwrap();
+        }
         server.await.unwrap();
         for body in [
             r#"{"success":true}"#,
             r#"{"data":{"counters":{"endpointCreated":1,"endpointFailed":1}}}"#,
             r#"{"data":{"counters":{"endpointCreated":1,"endpointFailed":0,"schemaFailed":1}}}"#,
-            r#"{"data":{"counters":{"endpointIgnored":1,"endpointFailed":0}}}"#,
+            r#"{"data":{"counters":{"endpointFailed":0}}}"#,
+            r#"{"data":{"counters":{"endpointCreated":0,"endpointFailed":0}}}"#,
+            r#"{"data":{"counters":{"endpointIgnored":1,"endpointFailed":1}}}"#,
+            r#"{"data":{"counters":{"endpointIgnored":1,"endpointFailed":0,"schemaFailed":1}}}"#,
+            r#"{"data":{"counters":{"endpointIgnored":1}}}"#,
+            r#"{"data":{"counters":{"endpointIgnored":-1,"endpointFailed":0}}}"#,
         ] {
             assert!(validate_response(200, body).is_err());
         }

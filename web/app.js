@@ -206,6 +206,7 @@ async function loadProject(id, preferredSource) {
     } catch (e) { if (currentId === state.project.id) { message('项目加载失败', e.message); $('protocol-list').replaceChildren(node('div', 'list-message', '协议加载失败，请检查源文件后刷新。')); } }
 }
 async function boot() {
+    $('publish-env').value = 'release';
     try {
         const data = await api('/api/projects'); state.projects = data.projects; $('version').textContent = `v${data.version}`;
         $('project-select').replaceChildren(...data.projects.map(p => { const option = node('option', '', p.name); option.value = p.id; return option; }));

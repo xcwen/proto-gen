@@ -91,7 +91,7 @@ TS HTTP 客户端合并 body 与参数类型，按声明方法及 query/path/hea
 
 import_options 还支持 target_endpoint_folder_id、target_schema_folder_id、target_branch_id、module_id；不填则沿用服务端根目录、主分支和默认模块。覆盖策略可选 OVERWRITE_EXISTING/AUTO_MERGE/KEEP_EXISTING，默认覆盖同 method+path 接口及同名模型，不删除未匹配的资源，不随意改动现有目标值。生成内容由 Proto 管理；需要保留手工修改的项目可显式选 AUTO_MERGE/KEEP_EXISTING。
 
-同步改用官方 `POST https://api.apifox.com/v1/projects/{projectId}/import-openapi`，版本头 2024-03-28。导入前统一校验发布计划；选中目标缺少当前环境 ID、重复最终 method+path、非法替换正则均失败。结果必须包含有效 counters，所有 *Failed 计数为 0，且至少一个接口创建/更新；不确定结果不自动重试。真实发布仍需显式同步命令，本次只执行本地导出/dry-run。
+同步改用官方 `POST https://api.apifox.com/v1/projects/{projectId}/import-openapi`，版本头 2024-03-28。导入前统一校验发布计划；选中目标缺少当前环境 ID、重复最终 method+path、非法替换正则均失败。结果必须包含有效 counters，所有 *Failed 计数为 0，并识别创建、更新、忽略及无需变更的完整零计数结果；重复同步时，endpointIgnored 或完整接口计数全为 0 都表示正常完成；缺失或不完整的结果仍报错。不确定结果不自动重试。真实发布仍需显式同步命令，本次只执行本地导出/dry-run。
 
 生成、检查、OpenAPI 和 dry-run 不下载工具。首次安装和升级显式执行 tools/proto/prepare.sh，按固定版本及 SHA256 缓存；Linux 容器使用项目目录中的持久缓存。
 
