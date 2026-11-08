@@ -280,6 +280,7 @@ impl App {
             .route("/api/projects/{id}/protocol", get(protocol).patch(edit))
             .route("/api/projects/{id}/generate", post(generate))
             .route("/api/projects/{id}/request", post(request))
+            .route("/api/projects/{id}/url-preview", post(url_preview))
             .route("/api/projects/{id}/apifox/preview", post(preview))
             .route("/api/projects/{id}/apifox/sync", post(publish))
             .layer(DefaultBodyLimit::max(REQUEST_LIMIT))
@@ -350,7 +351,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"));
+    h.insert("content-security-policy",HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src 'self' about:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"));
     response
 }
 async fn index(State(app): State<App>) -> Html<String> {
@@ -731,13 +732,12 @@ fn value_text(v: &Value) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| v.to_string())
 }
-async fn execute_request(input: TestRequest, uploads: Vec<FilePart>) -> Result<Value> {
-    ensure!(
-        (1..=120).contains(&input.timeout_seconds),
-        "超时范围为 1–120 秒"
-    );
-    let base =
-        reqwest::Url::parse(input.base_url.trim()).context("服务地址必须是完整 http(s) URL")?;
+fn request_url(
+    base_url: &str,
+    path: &str,
+    query: &BTreeMap<String, Value>,
+) -> Result<reqwest::Url> {
+    let base = reqwest::Url::parse(base_url.trim()).context("服务地址必须是完整 http(s) URL")?;
     ensure!(
         ["http", "https"].contains(&base.scheme())
             && base.host_str().is_some()
@@ -748,22 +748,65 @@ async fn execute_request(input: TestRequest, uploads: Vec<FilePart>) -> Result<V
         "无效的服务地址"
     );
     ensure!(
-        input.path.starts_with('/')
-            && !input.path.starts_with("//")
-            && !input.path.contains(['\r', '\n', '#', '{', '}']),
+        path.starts_with('/')
+            && !path.starts_with("//")
+            && !path.contains(['\r', '\n', '#', '{', '}']),
         "请填写完整接口路径，并替换路径中的占位符"
     );
-    let mut url = reqwest::Url::parse(&format!(
-        "{}{}",
-        base.as_str().trim_end_matches('/'),
-        input.path
-    ))?;
+    let mut url = reqwest::Url::parse(&format!("{}{}", base.as_str().trim_end_matches('/'), path))?;
     ensure!(url.origin() == base.origin(), "接口路径不能改变服务地址");
-    for (k, v) in &input.query {
+    for (k, v) in query {
         if !v.is_null() {
             url.query_pairs_mut().append_pair(k, &value_text(v));
         }
     }
+    Ok(url)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UrlPreview {
+    base_url: String,
+    path: String,
+    #[serde(default)]
+    query: BTreeMap<String, Value>,
+    environment: Option<String>,
+    environment_revision: Option<String>,
+}
+async fn url_preview(
+    State(app): State<App>,
+    ApiPath(id): ApiPath<usize>,
+    Json(input): Json<UrlPreview>,
+) -> WebResult<Json<Value>> {
+    let p = app.project(id)?;
+    blocking(move || {
+        let store = crate::environments::load(p.config.source.parent().unwrap())?;
+        let empty = BTreeMap::new();
+        let vars = if let Some(id) = input.environment.as_deref().filter(|s| !s.is_empty()) {
+            if input.environment_revision.as_deref() != Some(&store.revision) {
+                return Err(crate::environments::Conflict.into());
+            }
+            &store.config.environment(id)?.variables
+        } else {
+            &empty
+        };
+        let base = crate::environments::render(&input.base_url, vars)?;
+        ensure!(!base.trim().is_empty(), "请在管理环境中配置 API_BASE_URL");
+        let path = crate::environments::render(&input.path, vars)?;
+        let query =
+            serde_json::from_value(crate::environments::render_value(json!(input.query), vars)?)?;
+        let url = request_url(&base, &path, &query)?;
+        Ok(Json(
+            json!({"base_url":base.trim_end_matches('/'),"path":path,"url":url.as_str()}),
+        ))
+    })
+    .await
+}
+async fn execute_request(input: TestRequest, uploads: Vec<FilePart>) -> Result<Value> {
+    ensure!(
+        (1..=120).contains(&input.timeout_seconds),
+        "超时范围为 1–120 秒"
+    );
+    let url = request_url(&input.base_url, &input.path, &input.query)?;
     let method = reqwest::Method::from_bytes(input.method.as_bytes())?;
     ensure!(
         [

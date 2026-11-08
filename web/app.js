@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const pretty = value => JSON.stringify(value, null, 2);
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
-const state = { projects: [], project: null, listRevision: '', environments: null, environmentRevision: '', environmentId: '', environmentEdit: null, environmentEditId: '', environmentEditProject: null, protocols: [], current: null, selected: new Set(), tab: 'document', resultTab: 'body', response: null, preview: null, drafts: new Map(), expanded: new Set(['response.data']), branch: 0, epoch: 0, edit: null, token: '' };
+const state = { projects: [], project: null, listRevision: '', environments: null, environmentRevision: '', environmentId: '', baseTemplate:'', resolvedBase:'', resolvedUrl:'', urlPreviewEpoch:0, environmentEdit: null, environmentEditId: '', environmentEditProject: null, protocols: [], current: null, selected: new Set(), tab: 'document', resultTab: 'body', response: null, preview: null, drafts: new Map(), expanded: new Set(['response.data']), branch: 0, epoch: 0, edit: null, token: '' };
 let toastTimer;
 function toast(message, bad = false) { $('toast').textContent = message; $('toast').classList.toggle('error', bad); $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, bad ? 8500 : 4000); }
 async function api(path, options = {}) {
@@ -135,13 +135,13 @@ function renderDocument() {
     $('document-example').textContent = pretty(example); $('use-example').disabled = false;
 }
 function renderList() {
-    const list = $('protocol-list'), scroll = list.scrollTop, query = $('search').value.trim().toLowerCase(), tag = $('tag-filter').value;
+    const list = $('protocol-list'), scroll = list.scrollTop, openGroups = new Map([...list.querySelectorAll('.group')].map(g=>[g.dataset.category,g.open])), query = $('search').value.trim().toLowerCase(), tag = $('tag-filter').value;
     const visible = state.protocols.filter(p => (!tag || p.tags.includes(tag)) && (!query || `${p.title} ${p.path} ${p.source} ${p.tags.join(' ')} ${p.category_path.join('/')}`.toLowerCase().includes(query)));
     $('protocol-count').textContent = query || tag ? `${visible.length}/${state.protocols.length}` : state.protocols.length;
     const groups = new Map(); for (const p of visible) { const category = p.category_path.join(' / ') || p.source.split('/')[0]; if (!groups.has(category)) groups.set(category, []); groups.get(category).push(p); }
     const fragment = document.createDocumentFragment();
     for (const [category, protocols] of groups) {
-        const group = node('details', 'group'); group.open = true; const summary = node('summary'); summary.append(node('span', '', category), node('span', '', protocols.length)); group.append(summary);
+        const group = node('details', 'group'); group.dataset.category=category; group.open = openGroups.get(category) ?? true; const summary = node('summary'); summary.append(node('span', '', category), node('span', '', protocols.length)); group.append(summary);
         for (const p of protocols) {
             const row = node('div', `proto-row${state.current?.source === p.source ? ' active' : ''}`), check = document.createElement('input'); check.type = 'checkbox'; check.checked = state.selected.has(p.source); check.title = '选择用于批量同步'; check.setAttribute('aria-label', `选择 ${p.title}`);
             check.onchange = () => { check.checked ? state.selected.add(p.source) : state.selected.delete(p.source); renderSelection(); };
@@ -155,7 +155,7 @@ function renderList() {
 function renderSelection() { $('selection-count').textContent = state.selected.size ? `已选择 ${state.selected.size} 个接口` : '未选择批量接口'; $('clear-selection').hidden = !state.selected.size; if (state.current) renderPublish(); }
 function rememberDraft() {
     if (!state.project || !state.current) return;
-    state.drafts.set(`${state.project.id}:${state.current.source}`, { base: $('base-url').value, path: $('test-path').value, method: $('test-method').value, query: $('query-editor').value, headers: $('headers-editor').value, body: $('body-editor').value, content: $('content-type').value, timeout: $('timeout').value, response: state.response, environmentId: state.environmentId, auth: { type:$('request-auth-type').value, header_name:$('request-auth-header').value, value:$('request-auth-value').value } });
+    state.drafts.set(`${state.project.id}:${state.current.source}`, { base: state.baseTemplate, path: $('test-path').value, method: $('test-method').value, query: $('query-editor').value, headers: $('headers-editor').value, body: $('body-editor').value, content: $('content-type').value, timeout: $('timeout').value, response: state.response, environmentId: state.environmentId, auth: { type:$('request-auth-type').value, header_name:$('request-auth-header').value, value:$('request-auth-value').value } });
 }
 function fillExample() {
     const op = operation(), media = Object.keys(op.requestBody?.content || {})[0] || 'application/json';
@@ -164,7 +164,7 @@ function fillExample() {
     const full = Object.values(op.requestBody?.content?.[media]?.examples || {})[0]?.value;
     $('body-editor').value = pretty(full !== undefined ? full : sample(bodySchema()));
     $('query-editor').value = pretty(Object.fromEntries((op.parameters || []).filter(p => p.in === 'query').map(p => [p.name, sample(p.schema || p.content?.['application/json']?.schema || {})])));
-    $('body-editor').disabled = ['GET', 'HEAD'].includes($('test-method').value); renderFiles(true);
+    $('body-editor').disabled = ['GET', 'HEAD'].includes($('test-method').value); renderFiles(true); scheduleUrlPreview();
 }
 function addFile(name = 'file') { const row = node('div', 'file-row'), key = document.createElement('input'), file = document.createElement('input'), remove = node('button', 'icon-button', '×'); key.type = 'text'; key.value = name; key.placeholder = '字段名'; key.setAttribute('aria-label', '文件字段名'); file.type = 'file'; file.setAttribute('aria-label', `选择 ${name} 文件`); remove.title = '移除文件字段'; remove.onclick = () => row.remove(); row.append(key, file, remove); $('file-rows').append(row); }
 function renderFiles(reset = false) {
@@ -180,17 +180,17 @@ function renderCurrent() {
     state.branch = 0; renderDocument(); renderList();
     const draft = state.drafts.get(`${state.project.id}:${p.source}`);
     let rememberedBase = ''; try { rememberedBase = localStorage.getItem(`protogen:base:${state.project.root}`) || ''; } catch {}
-    $('base-url').value = draft?.base || (state.environmentId ? '{{API_BASE_URL}}' : rememberedBase); $('test-path').value = draft?.path || p.path; $('test-method').value = draft?.method || p.method; $('headers-editor').value = draft?.headers || '{}'; $('timeout').value = draft?.timeout || '15';
+    setBaseTemplate(draft?.base || '{{API_BASE_URL}}'); $('test-path').value = draft?.path || p.path; $('test-method').value = draft?.method || p.method; $('test-method').dataset.method=$('test-method').value.toLowerCase(); $('headers-editor').value = draft?.headers || '{}'; $('timeout').value = draft?.timeout || '15';
     fillExample();
     if (draft) { $('query-editor').value = draft.query; $('body-editor').value = draft.body; $('content-type').value = draft.content; renderFiles(true); }
     $('request-auth-type').value = draft?.auth?.type || 'environment'; $('request-auth-header').value = draft?.auth?.header_name || ''; $('request-auth-value').value = draft?.auth?.value || ''; renderRequestAuth();
     state.response = draft?.response || null; state.resultTab = 'body'; renderResponse(); state.preview = null; $('publish-result').hidden = true; $('publish-status').textContent = ''; renderPublish(); setTab(state.tab);
 }
-function setTab(tab) { state.tab = tab; document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab)); document.querySelectorAll('.tab-panel').forEach(p => p.hidden = p.id !== `panel-${tab}`); if (tab === 'request') $('base-url').focus(); }
+function setTab(tab) { state.tab = tab; document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab)); document.querySelectorAll('.tab-panel').forEach(p => p.hidden = p.id !== `panel-${tab}`); if (tab === 'request') scheduleUrlPreview(); }
 async function loadProtocol(source, saveDraft = true) {
     if (saveDraft) rememberDraft(); const epoch = ++state.epoch, id = state.project.id;
     $('load-status').textContent = '读取中…';
-    try { const data = await api(projectApi(`protocol?source=${encodeURIComponent(source)}`, id)); if (epoch !== state.epoch) return; state.current = data; renderCurrent(); document.querySelector(".proto-row.active")?.scrollIntoView({ block: "center" }); const url = new URL(location.href); url.searchParams.set('project', id); url.searchParams.set('source', source); history.replaceState(null, '', url); }
+    try { const data = await api(projectApi(`protocol?source=${encodeURIComponent(source)}`, id)); if (epoch !== state.epoch) return; state.current = data; renderCurrent(); const url = new URL(location.href); url.searchParams.set('project', id); url.searchParams.set('source', source); history.replaceState(null, '', url); }
     catch (e) { if (epoch === state.epoch) { message('无法读取协议', e.message); toast(e.message, true); } }
     finally { if (epoch === state.epoch) { $('load-status').replaceChildren(node('i'), document.createTextNode('本地协议')); } }
 }
@@ -200,7 +200,7 @@ async function loadProject(id, preferredSource) {
     $('search').value = ''; $('tag-filter').value = ''; $('protocol-list').replaceChildren(node('div', 'list-message', '正在加载协议…')); message('读取协议', '正在加载项目中的接口定义…', true); renderSelection();
     const currentId = state.project.id;
     try {
-        const [data, environmentData] = await Promise.all([api(projectApi('protocols', currentId)), api(projectApi('environments', currentId))]); if (currentId !== state.project.id) return; state.environments = environmentData.config; state.environmentRevision = environmentData.revision; let environmentId = environmentData.config.default_environment; try { environmentId = localStorage.getItem(`protogen:environment:${state.project.root}`) ?? environmentId; } catch {} state.environmentId = environmentData.config.environments.some(e => e.id === environmentId) ? environmentId : ''; renderEnvironmentSelector(); state.protocols = data.protocols; state.listRevision = data.workspace_revision;
+        const [data, environmentData] = await Promise.all([api(projectApi('protocols', currentId)), api(projectApi('environments', currentId))]); if (currentId !== state.project.id) return; state.environments = environmentData.config; state.environmentRevision = environmentData.revision; let environmentId = environmentData.config.default_environment; try { environmentId = localStorage.getItem(`protogen:environment:${state.project.root}`) ?? environmentId; } catch {} state.environmentId = environmentData.config.environments.some(e => e.id === environmentId) ? environmentId : environmentData.config.environments.some(e=>e.id===environmentData.config.default_environment) ? environmentData.config.default_environment : environmentData.config.environments[0]?.id || ''; renderEnvironmentSelector(); state.protocols = data.protocols; state.listRevision = data.workspace_revision;
         const filter = $('tag-filter'); filter.replaceChildren(node('option', '', '全部标签')); filter.firstChild.value = '';
         [...new Set(state.protocols.flatMap(p => p.tags))].sort().forEach(tag => { const option = node('option', '', tag); option.value = tag; filter.append(option); }); renderList();
         if (state.protocols.length) await loadProtocol(state.protocols.some(p => p.source === preferredSource) ? preferredSource : state.protocols[0].source, false); else message('暂无协议', '当前项目没有可查看的接口。');
@@ -220,15 +220,26 @@ function renderResponse() {
     $('response-stats').append(node('span', `status-pill${r.status >= 400 ? ' error' : ''}`, `HTTP ${r.status}`), node('span', '', `${r.elapsed_ms} ms`), node('span', '', r.bytes < 1024 ? `${r.bytes} B` : `${(r.bytes / 1024).toFixed(1)} KiB`));
     $('response-notice').hidden = !r.partial; $('response-notice').textContent = '已达到等待时间或 2 MiB 预览上限，以下为已收到的响应内容。';
     document.querySelectorAll('[data-result]').forEach(b => b.classList.toggle('active', b.dataset.result === state.resultTab));
+    const htmlTab = state.resultTab === 'html';
+    $('result-code').hidden = htmlTab; $('response-html').hidden = !htmlTab;
+    if (htmlTab) {
+        const documentPreview = new DOMParser().parseFromString(r.body,'text/html');
+        documentPreview.querySelectorAll('script,iframe,object,embed,base,meta[http-equiv],link').forEach(el=>el.remove());
+        documentPreview.querySelectorAll('[href],[action],[formaction]').forEach(el=>{el.removeAttribute('href');el.removeAttribute('action');el.removeAttribute('formaction');});
+        const policy = documentPreview.createElement('meta'); policy.httpEquiv='Content-Security-Policy'; policy.content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
+        documentPreview.head.prepend(policy);
+        if (!r.headers['content-type']?.includes('html') && !/<(?:html|head|body|div|p|h[1-6]|table|style|span)(?:\s|>)/i.test(r.body)) { const pre=documentPreview.createElement('pre');pre.textContent=r.body;documentPreview.body.replaceChildren(pre); }
+        $('response-html').srcdoc='<!doctype html>'+documentPreview.documentElement.outerHTML;
+    } else { $('response-html').removeAttribute('srcdoc'); }
     $('result-code').textContent = state.resultTab === 'headers' ? pretty(r.headers) : state.resultTab === 'request' ? `${r.method} ${r.url}` : formatResponse(r.body);
     const image = state.resultTab === 'body' && /^image\/(png|jpeg|webp|gif|avif|bmp)(?:;|$)/i.test(r.headers['content-type'] || ''); $('response-image').hidden = !image; if (image) $('response-image').src = `data:${r.headers['content-type'].split(';')[0]};base64,${r.body_base64}`;
 }
 function jsonObject(editor, label) { const value = JSON.parse($(editor).value || '{}'); if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} 必须是 JSON 对象`); return value; }
 async function sendRequest() {
-    if (!state.current) return; const button = $('send-request'), done = busy(button, '发送中…'), key = `${state.project.id}:${state.current.source}`, id = state.project.id;
+    if (!state.current) return; if (!state.environmentId) { toast('请先创建并选择请求环境',true); return; } const button = $('send-request'), done = busy(button, '发送中…'), key = `${state.project.id}:${state.current.source}`, id = state.project.id;
     try {
         const headers = jsonObject('headers-editor', '请求头'); if (Object.values(headers).some(v => typeof v !== 'string')) throw new Error('请求头的值必须是字符串');
-        const config = { source: state.current.source, base_url: $('base-url').value.trim(), path: $('test-path').value.trim(), method: $('test-method').value, query: jsonObject('query-editor', 'Query 参数'), headers, body: $('body-editor').value, environment: state.environmentId || null, environment_revision: state.environmentId ? state.environmentRevision : null, auth:{ type:$('request-auth-type').value, header_name:$('request-auth-header').value, value:$('request-auth-value').value }, content_type: $('content-type').value, timeout_seconds: Number($('timeout').value) };
+        const config = { source: state.current.source, base_url: state.baseTemplate.trim(), path: $('test-path').value.trim(), method: $('test-method').value, query: jsonObject('query-editor', 'Query 参数'), headers, body: $('body-editor').value, environment: state.environmentId || null, environment_revision: state.environmentId ? state.environmentRevision : null, auth:{ type:$('request-auth-type').value, header_name:$('request-auth-header').value, value:$('request-auth-value').value }, content_type: $('content-type').value, timeout_seconds: Number($('timeout').value) };
         if (!config.base_url) throw new Error('请先填写服务地址');
         if (!state.environmentId) { try { localStorage.setItem(`protogen:base:${state.project.root}`, config.base_url); } catch {} }
         const form = new FormData(); form.append('request', JSON.stringify(config));
@@ -302,11 +313,11 @@ document.addEventListener('keydown', e => { if (e.key === '/' && !['INPUT', 'TEX
 function currentEnvironment() { return state.environments?.environments.find(e => e.id === state.environmentId); }
 function authLabel(auth) { if (!auth || auth.type === 'none') return '无认证'; return auth.type === 'header_bear_auth' ? `${auth.header_name || 'Authorization'}: Bearer …` : `${auth.header_name || 'token'}: …`; }
 function renderEnvironmentSelector() {
-    const select = $('test-environment'); select.replaceChildren(node('option', '', '不使用环境')); select.firstChild.value = '';
+    const select = $('test-environment'); select.replaceChildren();
     for (const environment of state.environments?.environments || []) { const option = node('option', '', environment.name); option.value = environment.id; select.append(option); }
-    select.value = state.environmentId; const environment = currentEnvironment();
-    $('environment-description').textContent = environment ? `${Object.keys(environment.variables).length} 个变量 · ${authLabel(environment.auth)}` : '直接填写请求参数';
-    renderRequestAuth();
+    if (!state.environments?.environments.length) { const option=node('option','','请先创建环境'); option.value=''; option.disabled=true; select.append(option); } select.value = state.environmentId; const environment = currentEnvironment();
+    $('environment-description').textContent = environment ? `${Object.keys(environment.variables).length} 个变量 · ${authLabel(environment.auth)}` : '请先创建请求环境';
+    renderRequestAuth(); scheduleUrlPreview();
 }
 function renderRequestAuth() {
     const mode = $('request-auth-type').value, explicit = ['header_token','header_bear_auth'].includes(mode);
@@ -354,10 +365,10 @@ async function openEnvironments() {
 }
 async function saveEnvironmentForm(event) {
     event.preventDefault(); const done=busy($('save-environments'),'保存中…'); $('environment-error').hidden=true;
-    try { commitEnvironmentForm(); const id=state.environmentEditProject, data=await api(projectApi('environments',id),{method:'PUT',body:{revision:state.environmentEditRevision,config:state.environmentEdit}}); if(state.project.id===id){state.environments=data.config;state.environmentRevision=data.revision;state.environmentId=data.config.environments.some(e=>e.id===state.environmentEditId)?state.environmentEditId:data.config.default_environment;renderEnvironmentSelector();if(state.environmentId)$('base-url').value='{{API_BASE_URL}}';try{localStorage.setItem(`protogen:environment:${state.project.root}`,state.environmentId);}catch{}} $('environments-dialog').close();state.environmentEdit=null;toast('环境配置已保存'); }
+    try { commitEnvironmentForm(); const id=state.environmentEditProject, data=await api(projectApi('environments',id),{method:'PUT',body:{revision:state.environmentEditRevision,config:state.environmentEdit}}); if(state.project.id===id){state.environments=data.config;state.environmentRevision=data.revision;state.environmentId=data.config.environments.some(e=>e.id===state.environmentEditId)?state.environmentEditId:data.config.default_environment;renderEnvironmentSelector();setBaseTemplate('{{API_BASE_URL}}');try{localStorage.setItem(`protogen:environment:${state.project.root}`,state.environmentId);}catch{}} $('environments-dialog').close();state.environmentEdit=null;toast('环境配置已保存'); }
     catch(e){$('environment-error').textContent=e.message;$('environment-error').hidden=false;}finally{done();}
 }
-$('test-environment').onchange = event => { state.environmentId=event.target.value; try{localStorage.setItem(`protogen:environment:${state.project.root}`,state.environmentId);}catch{} if(state.environmentId){$('base-url').value='{{API_BASE_URL}}';}else{try{$('base-url').value=localStorage.getItem(`protogen:base:${state.project.root}`)||'';}catch{$('base-url').value='';}}renderEnvironmentSelector(); };
+$('test-environment').onchange = event => { state.environmentId=event.target.value; try{localStorage.setItem(`protogen:environment:${state.project.root}`,state.environmentId);}catch{} setBaseTemplate('{{API_BASE_URL}}');renderEnvironmentSelector(); };
 $('manage-environments').onclick=openEnvironments;
 $('request-auth-type').onchange=changeRequestAuth;
 $('environment-edit-select').onchange=event=>{try{commitEnvironmentForm();state.environmentEditId=event.target.value;$('environment-error').hidden=true;renderEnvironmentEditor();}catch(e){event.target.value=state.environmentEditId;$('environment-error').textContent=e.message;$('environment-error').hidden=false;}};
@@ -367,5 +378,28 @@ $('variable-add').onclick=()=>addVariableRow().querySelector('input').focus();
 $('environment-auth-type').onchange=()=>{const mode=$('environment-auth-type').value;if(mode==='header_token'){$('environment-auth-header').value='token';$('environment-auth-value').value='{{TOKEN}}';}if(mode==='header_bear_auth'){$('environment-auth-header').value='Authorization';$('environment-auth-value').value='{{BEAR_TOKEN}}';}renderEnvironmentAuth();};
 $('environments-form').onsubmit=saveEnvironmentForm;
 $('close-environments').onclick=$('cancel-environments').onclick=()=>{$('environments-dialog').close();state.environmentEdit=null;};
+
+let urlPreviewTimer;
+function setBaseTemplate(value) { state.baseTemplate=value;state.resolvedBase='';state.resolvedUrl='';$('base-url').value=value;$('base-url').title=value;scheduleUrlPreview(); }
+function scheduleUrlPreview() { clearTimeout(urlPreviewTimer);state.urlPreviewEpoch++;urlPreviewTimer=setTimeout(updateUrlPreview,160); }
+async function updateUrlPreview() {
+    if (!state.project || !state.current) return; const epoch=state.urlPreviewEpoch,id=state.project.id;
+    $('copy-request-url').disabled=true;
+    try {
+        const input={base_url:state.baseTemplate,path:$('test-path').value.trim(),query:jsonObject('query-editor','Query 参数'),environment:state.environmentId||null,environment_revision:state.environmentId?state.environmentRevision:null};
+        const value=await api(projectApi('url-preview',id),{method:'POST',body:input});
+        if(epoch!==state.urlPreviewEpoch||state.project.id!==id)return;
+        state.resolvedBase=value.base_url;state.resolvedUrl=value.url;
+        if(document.activeElement!==$('base-url'))$('base-url').value=value.base_url;
+        $('base-url').title=state.baseTemplate; $('resolved-url-value').textContent=value.url;$('resolved-url-value').title=value.url;$('resolved-url').classList.remove('invalid');$('copy-request-url').disabled=false;
+        $('base-url').classList.remove('unresolved');
+    }catch(e){if(epoch!==state.urlPreviewEpoch||state.project.id!==id)return;state.resolvedBase='';state.resolvedUrl='';if(document.activeElement!==$('base-url')&&state.baseTemplate.includes('{{'))$('base-url').value='';$('base-url').placeholder='请配置当前环境的 API_BASE_URL';$('base-url').classList.add('unresolved');$('resolved-url-value').textContent=e.message;$('resolved-url').classList.add('invalid');}
+}
+$('base-url').onfocus=()=>{ $('base-url').value=state.baseTemplate; };
+$('base-url').oninput=()=>{state.baseTemplate=$('base-url').value;scheduleUrlPreview();};
+$('base-url').onblur=()=>{if(state.resolvedBase)$('base-url').value=state.resolvedBase;scheduleUrlPreview();};
+$('test-path').addEventListener('input',scheduleUrlPreview);$('query-editor').addEventListener('input',scheduleUrlPreview);
+$('test-method').addEventListener('change',()=>{$('test-method').dataset.method=$('test-method').value.toLowerCase();});
+$('copy-request-url').onclick=async()=>{try{await navigator.clipboard.writeText(state.resolvedUrl);toast('请求 URL 已复制');}catch(e){toast(e.message,true);}};
 
 boot();

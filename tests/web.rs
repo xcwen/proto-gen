@@ -457,6 +457,15 @@ async fn environment_variables_authentication_and_local_persistence() {
             .status(),
         409
     );
+    let url_response = client.post(format!("{base}/api/projects/0/url-preview")).header("x-proto-csrf",&token)
+        .json(&json!({"base_url":"{{API_BASE_URL}}","path":"/echo","query":{"limit":0,"next":"{{NEXT}}"},"environment":"release","environment_revision":saved["revision"]})).send().await.unwrap();
+    assert_eq!(url_response.status(), 200);
+    let url_preview = url_response.json::<Value>().await.unwrap();
+    assert_eq!(url_preview["base_url"], upstream);
+    assert_eq!(
+        url_preview["url"],
+        format!("{upstream}/echo?limit=0&next=release-token")
+    );
     let on_disk = fs::read_to_string(d.path().join("proto/web.environments.local.json")).unwrap();
     assert!(on_disk.contains("release-token"));
     async fn send(
