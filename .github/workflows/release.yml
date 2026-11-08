@@ -37,7 +37,7 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup component add --toolchain "$RUST_TOOLCHAIN" rustfmt clippy
       - name: Install protoc
-        run: tools/install-protoc.sh
+        run: tools/ci-command.sh tools/install-protoc.sh
       - uses: actions/setup-go@v6
         with:
           go-version: "1.24.4"
@@ -95,7 +95,7 @@ jobs:
       - name: Build
         run: tools/ci-command.sh cargo "+$RUST_TOOLCHAIN" build --release --locked --target '${{ matrix.target }}' --bin proto-gen
       - name: Install protoc
-        run: tools/install-protoc.sh
+        run: tools/ci-command.sh tools/install-protoc.sh
       - uses: actions/setup-go@v6
         with:
           go-version: "1.24.4"

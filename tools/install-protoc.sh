@@ -10,7 +10,7 @@ case "$(uname -s):$(uname -m)" in
 esac
 PROTO_DOWNLOAD_DIR=$(mktemp -d)
 trap 'rm -rf "$PROTO_DOWNLOAD_DIR"' EXIT HUP INT TERM
-curl -fL "https://github.com/protocolbuffers/protobuf/releases/download/v$VERSION/protoc-$VERSION-$PLATFORM.zip" -o "$PROTO_DOWNLOAD_DIR/protoc.zip"
+curl -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 180 "https://github.com/protocolbuffers/protobuf/releases/download/v$VERSION/protoc-$VERSION-$PLATFORM.zip" -o "$PROTO_DOWNLOAD_DIR/protoc.zip"
 unzip -q "$PROTO_DOWNLOAD_DIR/protoc.zip" bin/protoc -d "$PROTO_DOWNLOAD_DIR"
 mkdir -p "$ROOT/toolchain/bin"
 install -m 0755 "$PROTO_DOWNLOAD_DIR/bin/protoc" "$ROOT/toolchain/bin/protoc"
