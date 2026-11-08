@@ -1,6 +1,6 @@
 # ProtoGen Web 工作台
 
-Web 界面随 v0.4.0 的二进制发布，前端资源全部内置。启动和查看协议不下载 GitHub 文件，不自动向 Apifox 发布。
+Web 界面内置于二进制发布包，前端资源全部内置。启动和查看协议不下载 GitHub 文件，不自动向 Apifox 发布。
 
 ## 启动
 
@@ -14,8 +14,9 @@ Web 界面随 v0.4.0 的二进制发布，前端资源全部内置。启动和�
 默认访问 http://127.0.0.1:7337。也可直接使用缓存的二进制：
 
 ```bash
-.tools/proto-gen/v0.4.0/macos-aarch64/proto-gen serve \
-  --config proto/generator.toml --listen 127.0.0.1:7337
+VERSION=$(cat proto/proto-gen.version)
+GENERATOR=$(sh tools/proto/install.sh --offline "$VERSION" .tools/proto-gen)
+"$GENERATOR" serve --config proto/generator.toml --listen 127.0.0.1:7337
 ```
 
 多个项目共用同一界面时重复指定 --config：
