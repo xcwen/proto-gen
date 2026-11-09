@@ -220,6 +220,7 @@ pub mod {module} {{
 }
 
 pub mod metadata_edit;
+pub mod navigation;
 pub mod web;
 
 pub mod environments;

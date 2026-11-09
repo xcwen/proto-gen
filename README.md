@@ -104,3 +104,41 @@ cargo test --locked
 PHP/TS/Go 控制器保护和增量补全、Rust 注册、只读检查、失败不安装及文档转换。
 源码结构：compiler.rs 读取统一模型，fields.rs 生成字段索引，targets.rs 输出各语言，
 controller_edit.rs/controllers.rs 补全控制器，project.rs 负责安装，openapi.rs 生成并校验完整 OpenAPI 3.1 文档，apifox.rs 构造发布计划并检查官方导入 API 结果。
+
+# Editor navigation index
+
+Project generation also writes `proto/navigation.json` (beside the protocol source
+directory). This versioned JSON contract maps logical endpoint identities to
+protocol sources and editable controller declarations for PHP, TypeScript, Rust
+and Go. Paths are relative to the project root inferred by `generator.toml`;
+they never contain temporary build directories or developer-specific roots.
+
+```json
+{
+  "version": 1,
+  "endpoints": [{
+    "id": "root/test/user_list",
+    "method": "GET",
+    "paths": ["/root/test/user_list"],
+    "proto": "proto/src/root/test__user_list.proto",
+    "controller": {
+      "file": "internal/controllers/root/test.go",
+      "owner": "TestController",
+      "symbol": "UserList"
+    }
+  }]
+}
+```
+
+`id` retains the source group/controller/action even when `http.path` overrides
+the URL. `paths` lists only routes emitted by the selected target, including PHP
+`_uri_no_project` aliases; custom HTTP paths do not imply an additional default
+route. An unspecified method is normalized to `POST`. Workspace/project identity
+is supplied by the consumer so separate checkouts can reuse the same index.
+Rust raw identifiers are retained in `controller.symbol`.
+
+The index is sorted by identity and method, included in `.proto-gen-manifest.json`,
+installed transactionally with other generated artifacts, repaired by incremental
+generation if deleted or edited, and verified without writes by `generate --check`.
+Consumers should locate the symbol inside its owner instead of relying on stale
+line numbers. Run `cargo test --locked --test navigation` for contract tests.

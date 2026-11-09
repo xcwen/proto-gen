@@ -149,6 +149,12 @@ pub(crate) fn run_generation(config_file: &Path, check: bool, force: bool) -> Re
     } else {
         crate::controller_edit::generate(&stage_cfg, &work)?;
     }
+    put(
+        &mirror
+            .join(proto.strip_prefix(&root)?)
+            .join("navigation.json"),
+        serde_json::to_vec_pretty(&crate::navigation::index(&cfg, &work)?)?,
+    )?;
     let mut planned = BTreeMap::new();
     collect(&mirror, &mirror, &mut planned)?;
     // The stage also contains unchanged controller copies; only changed files are written.

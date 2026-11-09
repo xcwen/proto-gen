@@ -25,6 +25,22 @@ CONFIG
 "$BUNDLE/proto-gen" generate --config "$SMOKE_DIR/proto/generator.toml"
 "$BUNDLE/proto-gen" generate --config "$SMOKE_DIR/proto/generator.toml" --check
 
+python3 - "$SMOKE_DIR/proto/navigation.json" <<'NAVIGATION'
+import json,sys
+with open(sys.argv[1]) as source:
+    index=json.load(source)
+assert index["version"] == 1
+endpoint=index["endpoints"][0]
+assert endpoint["id"] == "root/test/ping"
+assert endpoint["method"] == "POST"
+assert endpoint["paths"] == ["/root/test/ping"]
+assert endpoint["proto"] == "proto/src/root/test__ping.proto"
+assert endpoint["controller"] == {
+    "file": "controllers/Root/Test.php", "owner": "Test", "symbol": "ping"
+}
+print("navigation index smoke passed")
+NAVIGATION
+
 "$BUNDLE/proto-gen" openapi --config "$SMOKE_DIR/proto/generator.toml" --out "$SMOKE_DIR/openapi.json"
 
 "$BUNDLE/proto-gen" serve --config "$SMOKE_DIR/proto/generator.toml" --listen 127.0.0.1:0 > "$SMOKE_DIR/web.log" 2>&1 &

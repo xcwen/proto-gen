@@ -44,7 +44,7 @@ fn relative_path(from: &Path, to: &Path) -> Result<String> {
         .context("non-UTF8 controller path")?
         .replace('\\', "/"))
 }
-fn identifier(name: &str) -> Result<String> {
+pub(crate) fn identifier(name: &str) -> Result<String> {
     if syn::parse_str::<syn::Ident>(name).is_ok() {
         return Ok(name.into());
     }
