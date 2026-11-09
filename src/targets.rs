@@ -7,11 +7,19 @@ use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 pub fn generate(cfg: &Config, out: &Config, work: &Workspace) -> Result<()> {
+    generate_with_bindings(cfg, out, work, None)
+}
+pub(crate) fn generate_with_bindings(
+    cfg: &Config,
+    out: &Config,
+    work: &Workspace,
+    mut cache: Option<&mut crate::incremental::Bindings>,
+) -> Result<()> {
     match cfg.target.as_str() {
-        "php" => php(cfg, out, work)?,
-        "typescript" => typescript(cfg, out, work)?,
-        "go" => go(cfg, out, work)?,
-        "rust" => crate::generate_rust(work, work.stage.path(), &out.output)?,
+        "php" => php(cfg, out, work, &mut cache)?,
+        "typescript" => typescript(cfg, out, work, &mut cache)?,
+        "go" => go(cfg, out, work, &mut cache)?,
+        "rust" => crate::generate_rust_cached(work, work.stage.path(), &out.output, cache)?,
         _ => unreachable!(),
     }
     let mut bundle = work.rules.clone();
@@ -102,13 +110,13 @@ pub fn php_value(v: &Value) -> String {
         ),
     }
 }
-fn php(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
-    let mut cmd = Command::new(protoc());
-    cmd.current_dir(w.stage.path())
-        .arg("-I.")
-        .arg(format!("--php_out={}", out.output.display()))
-        .args(w.files.values());
-    command(&mut cmd)?;
+fn php(
+    cfg: &Config,
+    out: &Config,
+    w: &Workspace,
+    cache: &mut Option<&mut crate::incremental::Bindings>,
+) -> Result<()> {
+    bindings(cfg, out, w, cache)?;
     let mut routes = String::from("<?php\nreturn [\n");
     let mut seen = std::collections::BTreeSet::new();
     for a in &w.endpoints {
@@ -149,37 +157,13 @@ fn php(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
     put(&out.output.join("Proto/error.php"), code)?;
     Ok(())
 }
-fn typescript(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
-    let dest = out.output.join("proto");
-    fs::create_dir_all(&dest)?;
-    let plugin = cfg.root().join("node_modules/.bin/protoc-gen-ts_proto");
-    command(Command::new(protoc()).current_dir(w.stage.path()).arg("-I.").arg(format!("--plugin=protoc-gen-ts_proto={}",plugin.display())).arg(format!("--ts_proto_out={}",dest.display())).arg("--ts_proto_opt=esModuleInterop=true,forceLong=string,outputJsonMethods=true,outputEncodeMethods=false,snakeToCamel=false").args(w.endpoints.iter().map(|a|&a.staged)))?;
-    fn fix(dir: &Path) -> Result<()> {
-        let input_identifier = regex::Regex::new(r"\bin\b")?;
-        for e in fs::read_dir(dir)? {
-            let p = e?.path();
-            if p.is_dir() {
-                fix(&p)?;
-            } else if p.extension().is_some_and(|s| s == "ts") {
-                let s = fs::read_to_string(&p)?;
-                let mut s = s
-                    .lines()
-                    .filter(|s| !s.trim().starts_with("//   protoc "))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n";
-                if !p.to_string_lossy().contains("/common/") {
-                    if let Some(i) = s.find("createBaseout") {
-                        let head = input_identifier.replace_all(&s[..i], "_in").into_owned();
-                        s = head + &s[i..];
-                    }
-                }
-                fs::write(&p, s)?;
-            }
-        }
-        Ok(())
-    }
-    fix(&dest)?;
+fn typescript(
+    cfg: &Config,
+    out: &Config,
+    w: &Workspace,
+    cache: &mut Option<&mut crate::incremental::Bindings>,
+) -> Result<()> {
+    bindings(cfg, out, w, cache)?;
     let mut imports = vec![];
     let mut proto_imports = vec![];
     let mut definitions = vec![];
@@ -259,7 +243,12 @@ fn typescript(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
     )?;
     Ok(())
 }
-fn go(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
+fn go(
+    cfg: &Config,
+    out: &Config,
+    w: &Workspace,
+    cache: &mut Option<&mut crate::incremental::Bindings>,
+) -> Result<()> {
     let root = cfg.root();
     let module = fs::read_to_string(root.join("go.mod"))?
         .lines()
@@ -267,51 +256,7 @@ fn go(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
         .context("missing Go module")?
         .trim()
         .to_owned();
-    let code = tempfile::tempdir()?;
-    let local_plugin = root.join(".tools/protoc-gen-go");
-    let plugin = if local_plugin.is_file() {
-        local_plugin
-    } else {
-        std::env::current_exe()?
-            .parent()
-            .context("missing executable directory")?
-            .join("protoc-gen-go")
-    };
-    let mut cmd = Command::new(protoc());
-    cmd.current_dir(w.stage.path())
-        .arg("-I.")
-        .arg(format!("--plugin=protoc-gen-go={}", plugin.display()))
-        .arg(format!("--go_out={}", code.path().display()))
-        .arg(format!("--go_opt=module={module}"));
-    for (rel, dest) in &w.files {
-        let api = w.endpoints.iter().find(|a| &a.source == rel);
-        let (godir, pkg) = if let Some(a) = api {
-            (
-                format!("gen/proto/{}/{}__{}", a.group, a.controller, a.action),
-                format!("{}{}", a.controller, a.action)
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric())
-                    .collect::<String>(),
-            )
-        } else {
-            ("gen/proto/common".into(), "common".into())
-        };
-        cmd.arg(format!("--go_opt=M{dest}={module}/{godir};{pkg}"));
-    }
-    cmd.args(w.files.values());
-    command(&mut cmd)?;
-    fn copy(from: &Path, to: &Path) -> Result<()> {
-        for e in fs::read_dir(from)? {
-            let e = e?;
-            if e.path().is_dir() {
-                copy(&e.path(), &to.join(e.file_name()))?;
-            } else {
-                put(&to.join(e.file_name()), fs::read(e.path())?)?;
-            }
-        }
-        Ok(())
-    }
-    copy(&code.path().join("gen/proto"), &out.output)?;
+    bindings(cfg, out, w, cache)?;
     put(&out.output.join("descriptor.bin"), &w.descriptor)?;
     put(
         &out.output.join("api.json"),
@@ -355,5 +300,127 @@ fn go(cfg: &Config, out: &Config, w: &Workspace) -> Result<()> {
     let text=format!("// Code generated by gen_proto.sh. DO NOT EDIT.\npackage {package}\nimport (\n{}\n)\nfunc Register(app *httpcore.App) {{\n{}\n}}\n",imports.join("\n"),lines.join("\n"));
     put(registry, text)?;
     command(Command::new("gofmt").arg("-w").arg(registry))?;
+    Ok(())
+}
+
+fn bindings(
+    cfg: &Config,
+    out: &Config,
+    w: &Workspace,
+    cache: &mut Option<&mut crate::incremental::Bindings>,
+) -> Result<()> {
+    let roots: Vec<String> = if cfg.target == "typescript" {
+        w.endpoints.iter().map(|a| a.staged.clone()).collect()
+    } else {
+        w.files.values().cloned().collect()
+    };
+    if let Some(cache) = cache {
+        for root in roots {
+            let selected = vec![root.clone()];
+            let key = crate::incremental::binding_key(w, &selected)?;
+            cache.generate(&root, &key, &out.output, |output| {
+                generate_bindings(cfg, w, &selected, output)
+            })?;
+        }
+        Ok(())
+    } else {
+        generate_bindings(cfg, w, &roots, &out.output)
+    }
+}
+fn generate_bindings(cfg: &Config, w: &Workspace, roots: &[String], output: &Path) -> Result<()> {
+    match cfg.target.as_str() {
+        "php" => {
+            command(
+                Command::new(protoc())
+                    .current_dir(w.stage.path())
+                    .arg("-I.")
+                    .arg(format!("--php_out={}", output.display()))
+                    .args(roots),
+            )?;
+        }
+        "typescript" => {
+            let dest = output.join("proto");
+            fs::create_dir_all(&dest)?;
+            let plugin = cfg.root().join("node_modules/.bin/protoc-gen-ts_proto");
+            command(Command::new(protoc()).current_dir(w.stage.path()).arg("-I.").arg(format!("--plugin=protoc-gen-ts_proto={}",plugin.display())).arg(format!("--ts_proto_out={}",dest.display())).arg("--ts_proto_opt=esModuleInterop=true,forceLong=string,outputJsonMethods=true,outputEncodeMethods=false,snakeToCamel=false").args(roots))?;
+            fix_typescript(&dest)?;
+        }
+        "go" => {
+            let root = cfg.root();
+            let module = fs::read_to_string(root.join("go.mod"))?
+                .lines()
+                .find_map(|l| l.strip_prefix("module "))
+                .context("missing Go module")?
+                .trim()
+                .to_owned();
+            let code = tempfile::tempdir()?;
+            let plugin = crate::incremental::go_plugin(cfg)?;
+            let mut cmd = Command::new(protoc());
+            cmd.current_dir(w.stage.path())
+                .arg("-I.")
+                .arg(format!("--plugin=protoc-gen-go={}", plugin.display()))
+                .arg(format!("--go_out={}", code.path().display()))
+                .arg(format!("--go_opt=module={module}"));
+            for (rel, dest) in &w.files {
+                let api = w.endpoints.iter().find(|a| &a.source == rel);
+                let (godir, pkg) = if let Some(a) = api {
+                    (
+                        format!("gen/proto/{}/{}__{}", a.group, a.controller, a.action),
+                        format!("{}{}", a.controller, a.action)
+                            .chars()
+                            .filter(|c| c.is_ascii_alphanumeric())
+                            .collect::<String>(),
+                    )
+                } else {
+                    ("gen/proto/common".into(), "common".into())
+                };
+                cmd.arg(format!("--go_opt=M{dest}={module}/{godir};{pkg}"));
+            }
+            cmd.args(roots);
+            command(&mut cmd)?;
+            fn copy(from: &Path, to: &Path) -> Result<()> {
+                for e in fs::read_dir(from)? {
+                    let e = e?;
+                    if e.path().is_dir() {
+                        copy(&e.path(), &to.join(e.file_name()))?;
+                    } else {
+                        put(&to.join(e.file_name()), fs::read(e.path())?)?;
+                    }
+                }
+                Ok(())
+            }
+            copy(&code.path().join("gen/proto"), output)?;
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+fn fix_typescript(dest: &Path) -> Result<()> {
+    fn fix(dir: &Path) -> Result<()> {
+        let input_identifier = regex::Regex::new(r"\bin\b")?;
+        for e in fs::read_dir(dir)? {
+            let p = e?.path();
+            if p.is_dir() {
+                fix(&p)?;
+            } else if p.extension().is_some_and(|s| s == "ts") {
+                let s = fs::read_to_string(&p)?;
+                let mut s = s
+                    .lines()
+                    .filter(|s| !s.trim().starts_with("//   protoc "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                if !p.to_string_lossy().contains("/common/") {
+                    if let Some(i) = s.find("createBaseout") {
+                        let head = input_identifier.replace_all(&s[..i], "_in").into_owned();
+                        s = head + &s[i..];
+                    }
+                }
+                fs::write(&p, s)?;
+            }
+        }
+        Ok(())
+    }
+    fix(dest)?;
     Ok(())
 }

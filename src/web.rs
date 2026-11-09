@@ -495,10 +495,11 @@ async fn generate(State(app): State<App>, ApiPath(id): ApiPath<usize>) -> WebRes
             .lock()
             .map_err(|_| anyhow::anyhow!("project edit unavailable"))?;
         fingerprint(&p)?;
-        crate::project::run(&p.config_path, false)?;
-        *p.cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("cache unavailable"))? = None;
+        if crate::project::run_generation(&p.config_path, false, false)? {
+            *p.cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("cache unavailable"))? = None;
+        }
         snapshot(&p, |w| Ok(Json(json!({"count":w.endpoints.len()}))))
     })
     .await

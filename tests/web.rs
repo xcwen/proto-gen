@@ -126,6 +126,23 @@ async fn browse_edit_generate_conflicts_and_preview_share_the_native_model() {
         .get("/v1/job/list")
         .is_some());
     assert!(!preview.to_string().contains("do-not-leak-this-token"));
+    let generated = client
+        .post(format!("{base}/api/projects/0/generate"))
+        .header("x-proto-csrf", &token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(generated.status(), 200);
+    let unchanged = client
+        .get(&url)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["workspace_revision"], saved["workspace_revision"]);
     let config_file = d.path().join("proto/config.json");
     let changed = fs::read_to_string(&config_file)
         .unwrap()

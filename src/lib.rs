@@ -65,6 +65,7 @@ pub mod compiler;
 pub mod controller_edit;
 pub mod field_model;
 pub mod fields;
+mod incremental;
 pub mod openapi;
 pub mod project;
 pub mod settings;
@@ -86,6 +87,14 @@ pub fn generate(source: &Path, output: &Path) -> Result<()> {
     generate_rust(&workspace, source, output)
 }
 pub fn generate_rust(workspace: &compiler::Workspace, source: &Path, output: &Path) -> Result<()> {
+    generate_rust_cached(workspace, source, output, None)
+}
+pub(crate) fn generate_rust_cached(
+    workspace: &compiler::Workspace,
+    source: &Path,
+    output: &Path,
+    cache: Option<&mut incremental::Bindings>,
+) -> Result<()> {
     let stage = &workspace.stage;
     let packages: BTreeMap<String, String> = workspace
         .endpoints
@@ -103,12 +112,26 @@ pub fn generate_rust(workspace: &compiler::Workspace, source: &Path, output: &Pa
     let descriptor = output.join("descriptor.bin");
     use prost::Message;
     write_changed(&descriptor, &workspace.descriptor)?;
-    prost_build::Config::new()
-        .out_dir(output)
-        .include_file("messages.rs")
-        .compile_fds(prost_types::FileDescriptorSet::decode(
-            workspace.descriptor.as_slice(),
-        )?)?;
+    let generate = |binding_output: &Path| -> Result<()> {
+        prost_build::Config::new()
+            .out_dir(binding_output)
+            .include_file("messages.rs")
+            .compile_fds(prost_types::FileDescriptorSet::decode(
+                workspace.descriptor.as_slice(),
+            )?)?;
+        Ok(())
+    };
+    if let Some(cache) = cache {
+        let roots: Vec<_> = workspace.files.values().cloned().collect();
+        cache.generate(
+            "rust:messages",
+            &incremental::binding_key(workspace, &roots)?,
+            output,
+            generate,
+        )?;
+    } else {
+        generate(output)?;
+    }
     let pool = prost_reflect::DescriptorPool::decode(fs::read(&descriptor)?.as_slice())?;
     let mut generated = String::new();
     let mut routes = BTreeSet::new();

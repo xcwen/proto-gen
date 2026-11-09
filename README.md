@@ -10,6 +10,7 @@ PHP、TypeScript、Rust、Go 共用的协议生成器。只接受新版 `common/
 GENERATOR=$(sh install.sh v0.4.2 .tools/proto-gen)
 "$GENERATOR" generate --config ../node-core/proto/generator.toml
 "$GENERATOR" generate --config ../node-core/proto/generator.toml --check
+"$GENERATOR" generate --config ../node-core/proto/generator.toml --force
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json
 ```
 
@@ -81,6 +82,13 @@ PRIVATE 仅允许具备对应认证实现的 PHP 目标。
 保持不变。文件使用临时文件原子替换；安装失败时回滚已安装文件。
 `proto/.proto-gen-manifest.json` 记录管理范围，删除协议后只清理对应生成物，
 保留手写控制器及其他生成器管理的 DB/枚举文件。
+
+默认按内容指纹增量生成：输入、产物及控制器均未变化时跳过编译；有变化时仍全量校验协议，
+PHP/TypeScript/Go 仅重新生成变更 Proto 及其依赖影响范围内的消息绑定，其他绑定校验后复用。
+Rust 当前整体复用消息绑定，消息结构变更时整体重建；路由、字段索引和注册表始终来自完整模型。
+缓存位于 `proto/.proto-gen-cache.json`，并使用 `proto/.proto-gen.lock` 防止并发安装；
+两者应加入业务仓库 `.gitignore`。缓存缺失或损坏时自动重建，不需要手动准备。
+`--force` 忽略缓存并重建全部绑定。具体行为和验证方式见 [增量生成](docs/incremental-generation.md)。
 
 `--check` 在隔离目录重新生成并对比，不写回项目产物或控制器。
 OpenAPI 导出不发请求；sync-apifox 只有显式使用 --dry-run 才不发请求，实际同步

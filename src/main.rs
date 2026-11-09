@@ -14,7 +14,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if cmd == "help" || cmd == "--help" {
-        println!("proto-gen generate --config proto/generator.toml [--check]\nproto-gen openapi --config proto/generator.toml --out openapi.json\nproto-gen sync-apifox --config proto/generator.toml [--dry-run] <protocol.proto>\nproto-gen serve [--config proto/generator.toml ...] [--listen 127.0.0.1:7337] [--token-env NAME]\nproto-gen --version");
+        println!("proto-gen generate --config proto/generator.toml [--check] [--force]\nproto-gen openapi --config proto/generator.toml --out openapi.json\nproto-gen sync-apifox --config proto/generator.toml [--dry-run] <protocol.proto>\nproto-gen serve [--config proto/generator.toml ...] [--listen 127.0.0.1:7337] [--token-env NAME]\nproto-gen --version");
         return Ok(());
     }
     if cmd == "serve" || cmd == "web" {
@@ -48,12 +48,14 @@ fn run() -> Result<()> {
     }
     let mut config = None;
     let mut check = false;
+    let mut force = false;
     let mut out = None;
     let mut rest = vec![];
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => config = Some(PathBuf::from(args.next().context("missing config path")?)),
             "--check" if cmd == "generate" => check = true,
+            "--force" if cmd == "generate" => force = true,
             "--out" if cmd == "openapi" => {
                 out = Some(PathBuf::from(args.next().context("missing output path")?))
             }
@@ -64,7 +66,7 @@ fn run() -> Result<()> {
     match cmd.as_str() {
         "generate" => {
             anyhow::ensure!(rest.is_empty(), "unknown options: {rest:?}");
-            workspace_proto_gen::project::run(&config, check)
+            workspace_proto_gen::project::run_with_options(&config, check, force)
         }
         "openapi" => {
             anyhow::ensure!(rest.is_empty(), "unknown options: {rest:?}");
