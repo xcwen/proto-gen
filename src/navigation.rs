@@ -54,7 +54,7 @@ pub fn index(cfg: &Config, work: &Workspace) -> Result<Index> {
             "go" => (
                 a.group.clone(),
                 format!("{}.go", a.controller),
-                format!("{}Controller", crate::studly(&a.controller)),
+                crate::studly(&a.controller),
                 crate::studly(&a.action),
             ),
             "rust" => {

@@ -288,7 +288,7 @@ fn go(
         } else {
             a.method()
         };
-        lines.push(format!("httpcore.Register[*{alias}.In, *{alias}.Out](app, httpcore.Endpoint{{Path: {}, Method: {}, Auth: {}}}, (&{ctrl}.{}Controller{{}}).{})",json!(a.path),json!(method),json!(a.auth()),crate::studly(&a.controller),crate::studly(&a.action)));
+        lines.push(format!("httpcore.Register[*{alias}.In, *{alias}.Out](app, httpcore.Endpoint{{Path: {}, Method: {}, Auth: {}}}, (&{ctrl}.{}{{}}).{})",json!(a.path),json!(method),json!(a.auth()),crate::studly(&a.controller),crate::studly(&a.action)));
     }
     let registry = out.registry.as_ref().context("Go registry required")?;
     let package = registry

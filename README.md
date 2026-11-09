@@ -123,7 +123,7 @@ they never contain temporary build directories or developer-specific roots.
     "proto": "proto/src/root/test__user_list.proto",
     "controller": {
       "file": "internal/controllers/root/test.go",
-      "owner": "TestController",
+      "owner": "Test",
       "symbol": "UserList"
     }
   }]

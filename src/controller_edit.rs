@@ -148,7 +148,7 @@ fn typescript(root: &Path, a: Vec<&crate::compiler::Endpoint>) -> Result<()> {
 }
 fn go(root: &Path, apis: Vec<&crate::compiler::Endpoint>) -> Result<()> {
     let a = apis[0];
-    let cls = format!("{}Controller", crate::studly(&a.controller));
+    let cls = crate::studly(&a.controller);
     let file = root.join(&a.group).join(format!("{}.go", a.controller));
     let package = a.group.rsplit('/').next().unwrap();
     let mut source = fs::read_to_string(&file).unwrap_or_else(|_| format!("package {package}\n"));

@@ -7,7 +7,7 @@ fn navigation_matches_all_target_names_and_real_routes() {
         ("php", "AdminApi/AiTask.php", "AiTask", "user_list"),
         ("typescript", "admin_api/ai_task.ts", "ai_task", "user_list"),
         ("rust", "admin_api/ai_task.rs", "AiTask", "user_list"),
-        ("go", "admin_api/ai_task.go", "AiTaskController", "UserList"),
+        ("go", "admin_api/ai_task.go", "AiTask", "UserList"),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let proto = temp.path().join("proto");

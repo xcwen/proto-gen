@@ -169,15 +169,37 @@ fn typescript_additional_methods_reuse_generated_type_imports() {
 #[test]
 fn go_controller_import_aliases_and_existing_methods_are_preserved() {
     let (d, c) = fixture("go");
-    put(d.path(),"controllers/root/test.go","package root\nimport mycore \"go-core/pkg/httpcore\"\ntype TestController struct{}\nfunc (TestController) Kept(){ _ = \"}中文\" }\n");
+    put(d.path(),"controllers/root/test.go","package root\nimport mycore \"go-core/pkg/httpcore\"\ntype Test struct{}\nfunc (Test) Kept(){ _ = \"}中文\" }\n");
     let w = compiler::compile(&c.source, "go").unwrap();
     controller_edit::generate(&c, &w).unwrap();
     let path = d.path().join("controllers/root/test.go");
     let result = fs::read_to_string(&path).unwrap();
     assert!(result.contains("ctx *mycore.Context"));
-    assert!(result.contains("func (TestController) Kept()"));
+    assert!(result.contains("func (Test) Kept()"));
     controller_edit::generate(&c, &w).unwrap();
     assert_eq!(fs::read_to_string(path).unwrap(), result);
+}
+#[test]
+fn go_controller_names_match_registry_and_navigation() {
+    let Some(plugin) = std::env::var_os("PROTO_GEN_TEST_GO_PLUGIN") else {
+        return;
+    };
+    let (d, c) = fixture("go");
+    fs::create_dir_all(d.path().join(".tools")).unwrap();
+    fs::copy(plugin, d.path().join(".tools/protoc-gen-go")).unwrap();
+    put(d.path(), "go.mod", "module go-core\n\ngo 1.24.4\n");
+    let config = d.path().join("proto/generator.toml");
+    project::run(&config, false).unwrap();
+    let controller = fs::read_to_string(c.controllers.join("root/test.go")).unwrap();
+    assert!(controller.contains("type Test struct{}"));
+    assert!(controller.contains("func (Test) Sum("));
+    assert!(!controller.contains("TestController"));
+    let registry = fs::read_to_string(c.registry.as_ref().unwrap()).unwrap();
+    assert!(registry.contains("(&controller_root.Test{}).Sum"));
+    let navigation: serde_json::Value =
+        serde_json::from_slice(&fs::read(d.path().join("proto/navigation.json")).unwrap()).unwrap();
+    assert_eq!(navigation["endpoints"][0]["controller"]["owner"], "Test");
+    project::run(&config, true).unwrap();
 }
 #[test]
 fn downloaded_binary_uses_its_bundled_compiler_without_source_paths() {
