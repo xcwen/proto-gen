@@ -140,7 +140,8 @@ fn canonical_prefix_and_explicit_outside_scope_references_are_protected() {
 
 #[test]
 fn invalid_configuration_and_references_fail_closed() {
-    let mutations: Vec<Box<dyn Fn(&mut Value)>> = vec![
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    let mutations: Vec<Mutation> = vec![
         Box::new(|v| v["authorization"]["schema_version"] = json!(2)),
         Box::new(|v| v["authorization"]["policies"]["provider_llm"]["kind"] = json!("unknown")),
         Box::new(|v| v["authorization"]["policies"]["provider_llm"]["project_keys"] = json!([])),
