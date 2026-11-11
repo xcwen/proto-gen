@@ -94,6 +94,7 @@ pub struct Metadata {
     pub command_id: i32,
     #[serde(default)]
     pub docs: Documentation,
+    pub authorization: Option<crate::authorization::AuthorizationReference>,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -122,6 +123,7 @@ pub struct Endpoint {
     pub path: String,
     pub meta: Metadata,
     pub config: Value,
+    pub authorization: Option<crate::authorization::RouteAuthorization>,
 }
 impl Endpoint {
     pub fn name(&self) -> String {
@@ -139,7 +141,11 @@ impl Endpoint {
             .unwrap_or("")
     }
     pub fn manifest(&self) -> Value {
-        json!({"NAME":self.name(),"DESC":self.meta.description,"TITLE":self.meta.title,"MAINTAINER":self.meta.maintainers,"TREE":self.meta.category_path.join("-"),"TAGS":self.meta.tags,"CMD":self.meta.command_id,"OUT_EXAMPLE":self.meta.examples.iter().find_map(|e|e.response_json.as_ref()).map(|s|format!("{s}\n")).unwrap_or_default(),"IN_EXAMPLE":self.meta.examples.iter().find_map(|e|e.request_json.as_ref()).map(|s|format!("{s}\n")).unwrap_or_default(),"CONFIG":self.config,"AUTH":self.auth(),"METHOD":self.method(),"PROJECT":self.meta.project})
+        let mut value = json!({"NAME":self.name(),"DESC":self.meta.description,"TITLE":self.meta.title,"MAINTAINER":self.meta.maintainers,"TREE":self.meta.category_path.join("-"),"TAGS":self.meta.tags,"CMD":self.meta.command_id,"OUT_EXAMPLE":self.meta.examples.iter().find_map(|e|e.response_json.as_ref()).map(|s|format!("{s}\n")).unwrap_or_default(),"IN_EXAMPLE":self.meta.examples.iter().find_map(|e|e.request_json.as_ref()).map(|s|format!("{s}\n")).unwrap_or_default(),"CONFIG":self.config,"AUTH":self.auth(),"METHOD":self.method(),"PROJECT":self.meta.project});
+        if let Some(authorization) = &self.authorization {
+            value["AUTHORIZATION"] = json!(authorization);
+        }
+        value
     }
     pub fn runtime_api(&self) -> crate::Api {
         let mut meta = BTreeMap::new();
@@ -173,10 +179,12 @@ impl Endpoint {
             input: format!("{}.in", self.package),
             output: format!("{}.out", self.package),
             metadata: meta,
+            authorization: self.authorization.clone(),
         }
     }
 }
 pub struct Workspace {
+    pub authorization: Option<crate::authorization::RoutePolicyBundle>,
     pub stage: tempfile::TempDir,
     pub files: BTreeMap<String, String>,
     pub endpoints: Vec<Endpoint>,
@@ -327,6 +335,7 @@ pub fn compile_with_overrides(
                 path: format!("/{group}/{ctrl}/{action}"),
                 meta: Metadata::default(),
                 config: json!([]),
+                authorization: None,
             });
         }
         fs::create_dir_all(stage.path().join(&dest).parent().unwrap())?;
@@ -486,6 +495,13 @@ pub fn compile_with_overrides(
             api.config = php_arrays(api.config.take());
         }
     }
+    let settings = crate::settings::Settings::load(source.parent().unwrap())?;
+    let authorization = crate::authorization::compile(
+        settings.authorization.as_ref(),
+        &mut endpoints,
+        &source,
+        settings.enum_catalog.as_deref(),
+    )?;
     let registry = pool.get_extension_by_name("common.doc_fields").unwrap();
     let mut metadata_files = vec![];
     for (rel, dest) in &mapped {
@@ -536,6 +552,7 @@ pub fn compile_with_overrides(
         endpoints.sort_by_key(|a| a.name().to_lowercase().replace('_', "!"));
     }
     Ok(Workspace {
+        authorization,
         stage,
         files: mapped,
         endpoints,

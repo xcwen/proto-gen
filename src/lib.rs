@@ -1,4 +1,5 @@
 pub mod apifox;
+pub mod authorization;
 mod controllers;
 pub use controllers::generate_controllers;
 
@@ -22,6 +23,8 @@ pub struct Api {
     pub input: String,
     pub output: String,
     pub metadata: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<authorization::RouteAuthorization>,
 }
 fn files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = vec![];
@@ -155,6 +158,17 @@ pub(crate) fn generate_rust_cached(
             .map(|s| s.to_snake_case())
             .collect::<Vec<_>>()
             .join("::");
+        let authorization_constant = api
+            .authorization
+            .as_ref()
+            .map(|authorization| -> Result<String> {
+                let value = serde_json::to_string(authorization)?;
+                Ok(format!(
+                    "        const AUTHORIZATION_JSON: Option<&'static str> = Some({value:?});\n"
+                ))
+            })
+            .transpose()?
+            .unwrap_or_default();
         generated.push_str(&format!(
             r#"
 #[allow(non_snake_case)]
@@ -168,7 +182,7 @@ pub mod {module} {{
         const METHOD: &'static str = {method:?};
         const INPUT: &'static str = {input:?};
         const OUTPUT: &'static str = {out:?};
-    }}
+{authorization_constant}    }}
 }}
 "#,
             path = api.path,

@@ -34,6 +34,8 @@ message ApiOptions {
   reserved 16;
   reserved "json_int64"; // 64-bit integers always use JSON strings in Rust/Go.
   ApiDocumentation docs = 17;
+  // Explicit build-time authorization policy reference; independent of documentation tags.
+  AuthorizationOptions authorization = 18;
 
   enum Auth {
     AUTH_UNSPECIFIED = 0;
@@ -41,6 +43,10 @@ message ApiOptions {
     SESSION = 2;
     PRIVATE = 3;
   }
+}
+
+message AuthorizationOptions {
+  string policy = 1;
 }
 
 message ApiDocumentation {

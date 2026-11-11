@@ -137,6 +137,10 @@ route. An unspecified method is normalized to `POST`. Workspace/project identity
 is supplied by the consumer so separate checkouts can reuse the same index.
 Rust raw identifiers are retained in `controller.symbol`.
 
+Optional provider authorization is compiled independently of documentation exports.
+See [route authorization](docs/route-authorization.md) for the versioned configuration,
+generated contracts and gradual project rollout.
+
 The index is sorted by identity and method, included in `.proto-gen-manifest.json`,
 installed transactionally with other generated artifacts, repaired by incremental
 generation if deleted or edited, and verified without writes by `generate --check`.

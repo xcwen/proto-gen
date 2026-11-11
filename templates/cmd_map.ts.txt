@@ -13,7 +13,7 @@ var cmd_map: Record<string, {
     action:  string,
     title: string,
     auth : 'session' | 'public' | 'private',
-}> = {
+{{AUTHORIZATION_TYPE}}}> = {
 {{ROUTES}}
 };
 //只是用来检查ctrl 代码

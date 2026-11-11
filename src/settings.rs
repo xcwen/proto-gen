@@ -8,6 +8,8 @@ pub struct Settings {
     #[serde(default)]
     pub project_list: Vec<Project>,
     pub enum_catalog: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<crate::authorization::AuthorizationConfig>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
