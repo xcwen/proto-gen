@@ -263,7 +263,14 @@ impl<'a> Builder<'a> {
                     branch["properties"].get(group.name()).is_none(),
                     "discriminator conflicts with a field"
                 );
-                branch["properties"][group.name()] = json!({"type":"string","const":f.name()});
+                let mut properties = Map::new();
+                properties.insert(
+                    group.name().into(),
+                    json!({"type":"string","const":f.name()}),
+                );
+                properties.append(branch["properties"].as_object_mut().unwrap());
+                branch["x-apifox-orders"] = json!(properties.keys().collect::<Vec<_>>());
+                branch["properties"] = Value::Object(properties);
                 if branch.get("required").is_none() {
                     branch["required"] = json!([]);
                 }
