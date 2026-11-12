@@ -168,6 +168,14 @@ fn typescript_additional_methods_reuse_generated_type_imports() {
 }
 #[test]
 fn go_controller_import_aliases_and_existing_methods_are_preserved() {
+    if std::process::Command::new("gofmt")
+        .arg("-h")
+        .output()
+        .is_err()
+    {
+        eprintln!("Skipping Go controller test: gofmt is not installed");
+        return;
+    }
     let (d, c) = fixture("go");
     put(d.path(),"controllers/root/test.go","package root\nimport mycore \"go-core/pkg/httpcore\"\ntype Test struct{}\nfunc (Test) Kept(){ _ = \"}中文\" }\n");
     let w = compiler::compile(&c.source, "go").unwrap();
@@ -211,6 +219,16 @@ fn downloaded_binary_uses_its_bundled_compiler_without_source_paths() {
         fs::copy(env!("CARGO_BIN_EXE_proto-gen"), &executable).unwrap();
         let marker = bundle.join("compiler-used");
         let real = compiler::protoc();
+        // Resolve PATH before the child deliberately replaces it with a rejecting compiler.
+        let real = if real.components().count() == 1 && !real.is_absolute() {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|directory| directory.join(&real))
+                .find(|candidate| candidate.is_file())
+                .expect("protoc must be available on PATH")
+        } else {
+            real
+        };
+        let real = real.canonicalize().expect("cannot resolve the real protoc");
         let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
         put(
             &bundle,

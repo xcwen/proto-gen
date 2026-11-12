@@ -79,7 +79,7 @@ python3 tests/install_test.py
 if [ "$RELEASE_REUSE_TAG" -eq 0 ]; then
     git add -- Cargo.toml Cargo.lock release.sh
     if ! git diff --cached --quiet; then
-        git commit -m "Release $RELEASE_TAG"
+        git commit -m "Release $RELEASE_TAG" --only -- Cargo.toml Cargo.lock release.sh
     fi
     git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
 else
