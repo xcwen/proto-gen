@@ -35,6 +35,8 @@ message in {
 
 ## 枚举
 
+`enum` 可重复声明允许值，沿用 `default/examples` 的原生文本规则：字符串用 `enum: "chat" enum: "decision"`，布尔值用 `enum: "true" enum: "false"`，数字用 `enum: "0" enum: "1"`，64 位整数直接用十进制文本，不嵌套 JSON 引号。集合字段上的 `enum` 约束每个元素，也可放在 `items` 内；不能与 `enum_number/enum_str` 同时声明。
+
 `enum_number` 对照指定枚举的 `field_value`；`enum_str` 对照 `field_name`，大小写精确匹配。二者互斥。支持本地共享枚举名，或完整限定的 Proto enum 名。数字引用只允许整数字段，名称引用只允许 string。默认值、示例、整数范围和枚举成员均在生成时检查；不存在的引用立即失败。
 
 PHP、Node、Rust、Go 在转换 Proto JSON 之前执行生成的枚举校验，支持嵌套消息、集合以及实际使用的 apidoc 分支。省略的 optional 字段不被补值；0 不按缺省值跳过；bool 不当作数字。数字可以使用规范十进制字符串，以兼容 Proto64 和表单参数，不能用 enum 的名称代替数字；enum_str 不接受大小写变体或 field_value。

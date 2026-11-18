@@ -58,7 +58,7 @@ fn merge(mut base: Value, local: &Value) -> Value {
         let keys: &[&str] = match what.as_str().unwrap() {
             "CLEAR_DEFAULT" => &["default", "defaultNull"],
             "CLEAR_EXAMPLES" => &["examples", "examplesNull"],
-            "CLEAR_ENUM" => &["enumNumber", "enumStr", "enumJson"],
+            "CLEAR_ENUM" => &["enumNumber", "enumStr", "enum"],
             "CLEAR_FORMAT" => &["format"],
             "CLEAR_PATTERN" => &["pattern"],
             _ => unreachable!(),
@@ -82,13 +82,13 @@ fn merge(mut base: Value, local: &Value) -> Value {
         }
         if k == "enumNumber" {
             b.remove("enumStr");
-            b.remove("enumJson");
+            b.remove("enum");
         }
         if k == "enumStr" {
             b.remove("enumNumber");
-            b.remove("enumJson");
+            b.remove("enum");
         }
-        if k == "enumJson" {
+        if k == "enum" {
             b.remove("enumNumber");
             b.remove("enumStr");
         }
@@ -107,6 +107,11 @@ fn resolve(
     templates: &BTreeMap<String, Value>,
     stack: &mut BTreeSet<String>,
 ) -> Result<Value> {
+    ensure!(
+        !(raw.get("enum").is_some()
+            && (raw.get("enumNumber").is_some() || raw.get("enumStr").is_some())),
+        "enum cannot be combined with an enum reference"
+    );
     ensure!(
         !(raw["defaultNull"] == true && raw.get("default").is_some()),
         "default and default_null are mutually exclusive"
@@ -393,7 +398,7 @@ fn parse_value(text: &str, field: &FieldDescriptor, single: bool) -> Result<Valu
     if textual && (single || (!field.is_list() && !field.is_map())) {
         Ok(json!(text))
     } else {
-        serde_json::from_str(text).context("invalid default/examples JSON text")
+        serde_json::from_str(text).context("invalid default/examples/enum JSON text")
     }
 }
 fn make_model(
@@ -508,17 +513,17 @@ fn make_model(
         model.enum_values = Some(values);
         model.enum_number = number.is_some();
     }
-    if let Some(items) = meta.get("enumJson").and_then(Value::as_array) {
+    if let Some(items) = meta.get("enum").and_then(Value::as_array) {
         ensure!(
             model.enum_values.is_none(),
-            "enum_json cannot be combined with an enum reference"
+            "enum cannot be combined with an enum reference"
         );
         let mut values = vec![];
         for item in items {
-            let v = serde_json::from_str(item.as_str().unwrap())?;
+            let v = parse_value(item.as_str().unwrap(), field, true)?;
             ensure!(
                 scalar_matches(&v, &kind),
-                "{} enum_json has wrong type",
+                "{} enum has wrong type",
                 field.full_name()
             );
             values.push(v);

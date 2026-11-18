@@ -129,6 +129,83 @@ optional uint64 large=4 [(common.field)={max_uint:18446744073709551614 default:"
     );
 }
 #[test]
+fn literal_enums_follow_field_types_and_preserve_collection_rules() {
+    let (_t, w) = fixture(
+        r#"optional string task_type=1 [(common.field)={default:"chat" enum:"chat" enum:"decision"}];
+optional bool flag=2 [(common.field)={default:"false" enum:"true" enum:"false"}];
+optional uint32 count=3 [(common.field)={enum:"0" enum:"2"}];
+optional uint64 large=4 [(common.field)={enum:"18446744073709551615"}];
+repeated string names=5 [(common.field)={enum:"chat" enum:"decision" examples:'["chat"]'}];
+map<string,string> labels=6 [(common.field)={items:{enum:"chat" enum:"decision"}}];
+optional string empty=7 [(common.field)={enum:"" enum:"null" enum:'"quoted"'}];"#,
+        "",
+    );
+    let d = doc(&w);
+    let s = &d["paths"]["/demo/job/list"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let c = d["components"]["schemas"].as_object().unwrap();
+    assert_eq!(
+        s["properties"]["task_type"]["enum"],
+        json!(["chat", "decision"])
+    );
+    assert_eq!(s["properties"]["flag"]["enum"], json!([true, false]));
+    assert_eq!(s["properties"]["count"]["enum"], json!([0, 2]));
+    assert_eq!(
+        s["properties"]["large"]["enum"],
+        json!(["18446744073709551615"])
+    );
+    assert_eq!(
+        s["properties"]["empty"]["enum"],
+        json!(["", "null", "\"quoted\""])
+    );
+    assert!(openapi::validate_instance(s, &json!({"task_type":"decision","flag":false,"count":0,"large":"18446744073709551615","names":["chat"],"labels":{"a":"decision"}}), c).is_ok());
+    for v in [
+        json!({"task_type":"other"}),
+        json!({"flag":"false"}),
+        json!({"count":1}),
+        json!({"large":"18446744073709551614"}),
+        json!({"names":["other"]}),
+        json!({"labels":{"a":"other"}}),
+    ] {
+        assert!(
+            openapi::validate_instance(s, &v, c).is_err(),
+            "accepted {v}"
+        );
+    }
+    assert_eq!(
+        w.rules["messages"]["proto.project.demo.job__list.in"]["task_type"]["values"],
+        json!(["chat", "decision"])
+    );
+}
+
+#[test]
+fn literal_enum_templates_can_be_overridden_and_cleared() {
+    let (temp, _) = fixture("", "");
+    put(
+        temp.path(),
+        "proto/src/demo/job__list.proto",
+        r#"syntax="proto3";import "common/api_options.proto";import "common/field_options.proto";
+option(common.api)={title:"test" auth:SESSION};
+message in {optional string replaced=1 [(common.field)={template_ref:"names" enum:"chat"}];
+optional string cleared=2 [(common.field)={template_ref:"names" clear:CLEAR_ENUM}];
+optional string referenced=3 [(common.field)={template_ref:"literal" enum_str:"boolean"}];} message out {}"#,
+    );
+    put(
+        temp.path(),
+        "proto/src/common/doc_fields.proto",
+        r#"syntax="proto3";package common;import "common/field_options.proto";
+option(common.doc_fields)={templates:{name:"names" field:{enum_str:"boolean"}} templates:{name:"literal" field:{enum:"chat"}}};"#,
+    );
+    let w = compiler::compile(&temp.path().join("proto/src"), "rust").unwrap();
+    let d = doc(&w);
+    let properties = &d["paths"]["/demo/job/list"]["post"]["requestBody"]["content"]
+        ["application/json"]["schema"]["properties"];
+    assert_eq!(properties["replaced"]["enum"], json!(["chat"]));
+    assert!(properties["cleared"].get("enum").is_none());
+    assert_eq!(properties["referenced"]["enum"], json!(["FALSE", "TRUE"]));
+}
+
+#[test]
 fn invalid_field_metadata_is_rejected_before_generation() {
     for fields in [
         r#"uint32 flag=1 [(common.field)={enum_number:"missing"}];"#,
@@ -144,6 +221,10 @@ fn invalid_field_metadata_is_rejected_before_generation() {
         r#"string flag=1 [(common.field)={template_ref:"missing"}];"#,
         r#"repeated string flag=1 [(common.field)={examples:'[""]' items:{min_length:1}}];"#,
         r#"string flag=1 [(common.field)={required:true}];"#,
+        r#"bool flag=1 [(common.field)={enum:"chat"}];"#,
+        r#"uint32 flag=1 [(common.field)={enum:"-1"}];"#,
+        r#"string flag=1 [(common.field)={enum:"chat" default:"other"}];"#,
+        r#"string flag=1 [(common.field)={enum:"chat" enum_str:"boolean"}];"#,
     ] {
         let (temp, _) = fixture("", "");
         put(
