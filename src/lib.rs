@@ -4,7 +4,7 @@ mod controllers;
 pub use controllers::generate_controllers;
 
 use anyhow::{bail, Result};
-use heck::ToSnakeCase;
+use heck::{ToSnakeCase, ToUpperCamelCase};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -158,6 +158,17 @@ pub(crate) fn generate_rust_cached(
             .map(|s| s.to_snake_case())
             .collect::<Vec<_>>()
             .join("::");
+        let output_message = pool.get_message_by_name(&api.output).unwrap();
+        let output_type = format!(
+            "{}::{}",
+            output_message
+                .package_name()
+                .split('.')
+                .map(ToSnakeCase::to_snake_case)
+                .collect::<Vec<_>>()
+                .join("::"),
+            output_message.name().to_upper_camel_case()
+        );
         let authorization_constant = api
             .authorization
             .as_ref()
@@ -174,7 +185,7 @@ pub(crate) fn generate_rust_cached(
 #[allow(non_snake_case)]
 pub mod {module} {{
     pub type In = crate::messages::{rust_pkg}::In;
-    pub type Out = crate::messages::{rust_pkg}::Out;
+    pub type Out = crate::messages::{output_type};
     pub struct Endpoint;
     impl crate::Endpoint for Endpoint {{
         type In = In; type Out = Out;

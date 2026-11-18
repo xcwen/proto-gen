@@ -280,3 +280,154 @@ fn downloaded_binary_uses_its_bundled_compiler_without_source_paths() {
         );
     }
 }
+
+fn shared_output_fixture(target: &str) -> (tempfile::TempDir, Config) {
+    let (d, c) = fixture(target);
+    put(
+        d.path(),
+        "proto/src/common/shared.proto",
+        r#"syntax="proto3";
+package common;
+option php_namespace = "Proto\\Project\\Common";
+message voice_file_item_t {
+  string voice_file_id = 1; // 录音文件ID
+  optional uint64 size = 7;
+}
+message other_item_t { string name = 1; }
+"#,
+    );
+    put(
+        d.path(),
+        "proto/src/root/test__sum.proto",
+        r#"syntax="proto3";
+import "common/api_options.proto";
+import "common/shared.proto";
+option(common.api)={title:"测试" auth:PUBLIC output:"common.voice_file_item_t"};
+message in { string voice_file_id = 1; }
+"#,
+    );
+    (d, c)
+}
+
+#[test]
+fn shared_output_resolves_runtime_fields_and_openapi() {
+    for target in ["typescript", "php", "rust", "go"] {
+        let (_d, c) = shared_output_fixture(target);
+        let w = compiler::compile(&c.source, target).unwrap();
+        assert_eq!(
+            w.endpoints[0].runtime_api().output,
+            "common.voice_file_item_t"
+        );
+        assert!(w
+            .pool
+            .get_message_by_name("proto.project.root.test__sum.out")
+            .is_none());
+        let map = workspace_proto_gen::fields::struct_map(&w, target == "php").unwrap();
+        let common_key = if target == "php" {
+            "common.voice_file_item_t"
+        } else {
+            "common.shared.voice_file_item_t"
+        };
+        let endpoint_key = if ["rust", "go"].contains(&target) {
+            "project.root.test__sum.out"
+        } else {
+            "root.test__sum.out"
+        };
+        assert_eq!(map[endpoint_key], map[common_key]);
+        assert_eq!(map[endpoint_key][0][4], "录音文件ID");
+        let p = serde_json::from_value(serde_json::json!({"apifox_project_name":"test"})).unwrap();
+        let doc = workspace_proto_gen::openapi::document(&w.endpoints[0], &w, &p).unwrap();
+        let shared = &doc["components"]["schemas"]["common.voice_file_item_t.response"];
+        assert_eq!(shared["properties"]["voice_file_id"]["type"], "string");
+        assert_eq!(shared["properties"]["size"]["type"], "string");
+    }
+}
+
+#[test]
+fn shared_output_rejects_unknown_unimported_and_conflicting_types() {
+    for edit in [0, 1, 2] {
+        let (d, c) = shared_output_fixture("typescript");
+        let path = d.path().join("proto/src/root/test__sum.proto");
+        let text = fs::read_to_string(&path).unwrap();
+        let text = match edit {
+            0 => text.replace("common.voice_file_item_t", "common.missing_t"),
+            1 => text.replace("import \"common/shared.proto\";", ""),
+            _ => text + "\nmessage out {}\n",
+        };
+        fs::write(path, text).unwrap();
+        assert!(compiler::compile(&c.source, "typescript").is_err());
+    }
+}
+
+#[test]
+fn shared_output_generates_native_bindings() {
+    for target in ["php", "rust", "typescript", "go"] {
+        let (d, c) = shared_output_fixture(target);
+        if target == "typescript" {
+            let Some(modules) = std::env::var_os("PROTO_GEN_TEST_NODE_MODULES") else {
+                continue;
+            };
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(modules, d.path().join("node_modules")).unwrap();
+        }
+        if target == "go" {
+            let Some(plugin) = std::env::var_os("PROTO_GEN_TEST_GO_PLUGIN") else {
+                continue;
+            };
+            fs::create_dir_all(d.path().join(".tools")).unwrap();
+            fs::copy(plugin, d.path().join(".tools/protoc-gen-go")).unwrap();
+            put(d.path(), "go.mod", "module go-core\n\ngo 1.24\n");
+        }
+        let config = d.path().join("proto/generator.toml");
+        project::run(&config, false).unwrap();
+        let (path, expected) = match target {
+            "php" => (
+                c.output.join("Proto/cmd_list.php"),
+                "\\Proto\\Project\\Common\\voice_file_item_t::class",
+            ),
+            "rust" => (
+                c.output.join("api.rs"),
+                "crate::messages::common::VoiceFileItemT",
+            ),
+            "typescript" => (
+                c.output.join("proto/root/test__sum.ts"),
+                "export { voice_file_item_t as out } from '../common/shared';",
+            ),
+            _ => (
+                c.output.join("root/test__sum/output_alias.go"),
+                "type Out = shared.VoiceFileItemT",
+            ),
+        };
+        let generated = fs::read_to_string(&path).unwrap();
+        assert!(
+            generated.contains(expected),
+            "{}: {generated}",
+            path.display()
+        );
+        project::run(&config, true).unwrap();
+        if target == "typescript" {
+            assert!(generated.contains("export interface _in"));
+            let mut parser = tree_sitter::Parser::new();
+            parser
+                .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+                .unwrap();
+            assert!(!parser
+                .parse(&generated, None)
+                .unwrap()
+                .root_node()
+                .has_error());
+            let proto = d.path().join("proto/src/root/test__sum.proto");
+            let text = fs::read_to_string(&proto).unwrap();
+            fs::write(
+                proto,
+                text.replace("common.voice_file_item_t", "common.other_item_t"),
+            )
+            .unwrap();
+            project::run(&config, false).unwrap();
+            assert!(fs::read_to_string(path)
+                .unwrap()
+                .contains("other_item_t as out"));
+            project::run(&config, true).unwrap();
+        }
+    }
+}

@@ -36,6 +36,8 @@ message ApiOptions {
   ApiDocumentation docs = 17;
   // Explicit build-time authorization policy reference; independent of documentation tags.
   AuthorizationOptions authorization = 18;
+  // Fully qualified shared response message; omit the local message out when set.
+  string output = 19;
 
   enum Auth {
     AUTH_UNSPECIFIED = 0;

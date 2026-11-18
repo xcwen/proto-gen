@@ -77,6 +77,24 @@ PRIVATE 仅允许具备对应认证实现的 PHP 目标。
 所有 64 位整数的 JSON 表示统一为字符串，已删除 json_int64 数字策略。
 详见 [字段及配置契约](docs/field-and-project-options.md)、[Apifox 审查及实施说明](docs/apifox-audit-and-design.md)。
 
+需要直接复用公共响应消息时，在 `common.api` 中指定完整消息名，并 import 定义文件：
+
+```proto
+import "common/api_options.proto";
+import "common/common.proto";
+option (common.api) = {
+  title: "获取录音文件信息"
+  auth: SESSION
+  output: "common.voice_file_item_t"
+};
+message in { string voice_file_id = 1; }
+```
+
+这是标准 Protobuf 自定义 option 语法；设置 `output` 后不再声明本地 `message out`。
+当前支持 `common/` 下的顶层公共消息。未设置时仍使用本地 `out`。
+TypeScript 导出公共消息的 `out` 别名（类型与 codec），Go 导出类型别名，PHP/Rust 路由直接引用公共类型；
+OpenAPI 和字段索引使用同一公共定义，响应 JSON 不增加嵌套层。
+
 ## 安装与检查
 
 先在临时项目生成消息、路由及所有控制器变更，解析/编译失败时不写入业务仓库。

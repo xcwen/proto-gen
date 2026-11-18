@@ -355,7 +355,7 @@ pub fn document(a: &Endpoint, w: &Workspace, project: &Project) -> Result<Value>
     let mut output = Builder::new(w, true);
     let business = output.message(
         w.pool
-            .get_message_by_name(&format!("{}.out", a.package))
+            .get_message_by_name(&a.output())
             .context("missing output type")?,
     )?;
     let mode = a.meta.docs.response_mode.as_str();

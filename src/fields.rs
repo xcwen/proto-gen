@@ -250,6 +250,20 @@ pub fn struct_map(
             enumeration(&mut map, f, e, &[5, i as i32], php);
         }
     }
+    // Keep the legacy endpoint.out lookup contract for documentation consumers.
+    for api in &workspace.endpoints {
+        if !api.meta.output.is_empty() {
+            let message = workspace.pool.get_message_by_name(&api.output()).unwrap();
+            let rows = map[&key(
+                message.parent_file().file_descriptor_proto(),
+                message.name(),
+                php,
+            )]
+                .clone();
+            let file = workspace.pool.get_file_by_name(&api.staged).unwrap();
+            map.insert(key(file.file_descriptor_proto(), "out", php), rows);
+        }
+    }
     Ok(map)
 }
 pub fn errors(workspace: &crate::compiler::Workspace) -> Value {

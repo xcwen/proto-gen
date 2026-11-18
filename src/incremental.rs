@@ -308,5 +308,11 @@ pub fn binding_key(work: &Workspace, roots: &[String]) -> Result<String> {
     for root in roots {
         visit(work, root, &mut files)?;
     }
-    Ok(digest(&serde_json::to_vec(&files)?))
+    let outputs: BTreeMap<_, _> = work
+        .endpoints
+        .iter()
+        .filter(|a| roots.contains(&a.staged) && !a.meta.output.is_empty())
+        .map(|a| (&a.staged, &a.meta.output))
+        .collect();
+    Ok(digest(&serde_json::to_vec(&(files, outputs))?))
 }

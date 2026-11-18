@@ -95,6 +95,8 @@ pub struct Metadata {
     #[serde(default)]
     pub docs: Documentation,
     pub authorization: Option<crate::authorization::AuthorizationReference>,
+    #[serde(default)]
+    pub output: String,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -147,6 +149,13 @@ impl Endpoint {
         }
         value
     }
+    pub fn output(&self) -> String {
+        if self.meta.output.is_empty() {
+            format!("{}.out", self.package)
+        } else {
+            self.meta.output.clone()
+        }
+    }
     pub fn runtime_api(&self) -> crate::Api {
         let mut meta = BTreeMap::new();
         for (k, v) in [
@@ -177,7 +186,7 @@ impl Endpoint {
             auth: self.auth(),
             title: self.meta.title.clone(),
             input: format!("{}.in", self.package),
-            output: format!("{}.out", self.package),
+            output: self.output(),
             metadata: meta,
             authorization: self.authorization.clone(),
         }
@@ -383,6 +392,34 @@ pub fn compile_with_overrides(
             prost_reflect::Value::Message(m) => serde_json::to_value(m)?,
             _ => bail!("common.api must be a message"),
         })?;
+        if !api.meta.output.is_empty() {
+            let message = pool
+                .get_message_by_name(&api.meta.output)
+                .with_context(|| {
+                    format!("{}: unknown output message {}", api.source, api.meta.output)
+                })?;
+            ensure!(
+                message.parent_message().is_none()
+                    && message.parent_file().name().starts_with("common/"),
+                "{}: output must reference a top-level shared message in common/",
+                api.source
+            );
+            ensure!(
+                file.file_descriptor_proto()
+                    .dependency
+                    .iter()
+                    .any(|name| name == message.parent_file().name()),
+                "{}: import the file defining output {}",
+                api.source,
+                api.meta.output
+            );
+            ensure!(
+                pool.get_message_by_name(&format!("{}.out", api.package))
+                    .is_none(),
+                "{}: output and local message out are mutually exclusive",
+                api.source
+            );
+        }
         ensure!(
             !api.meta.title.trim().is_empty(),
             "{}: title required",
@@ -541,9 +578,7 @@ pub fn compile_with_overrides(
         ensure!(
             pool.get_message_by_name(&format!("{}.in", api.package))
                 .is_some()
-                && pool
-                    .get_message_by_name(&format!("{}.out", api.package))
-                    .is_some(),
+                && pool.get_message_by_name(&api.output()).is_some(),
             "{} requires in and out messages",
             api.source
         );
