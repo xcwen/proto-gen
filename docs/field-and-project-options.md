@@ -55,7 +55,9 @@ PHP、Node、Rust、Go 在转换 Proto JSON 之前执行生成的枚举校验，
 
 ## 接口文档及 HTTP
 
-`apidoc_in` 通过一个 `oneof` 定义请求分支，oneof 名作为区分字段，分支名作为取值。
+`apidoc_in` 可通过一个 `oneof` 定义请求分支，oneof 名作为区分字段，分支名作为取值。
+也可使用普通字段定义文档输入对象。共享消息中的嵌套 `apidoc_in` 同样支持区分字段分支，
+可作为数组元素复用单任务定义；根接口使用普通 `apidoc_in` 定义批次编号、任务数组等字段。
 如果分支内某个字段本身允许不同的原生 JSON 类型，可在文档模型中使用 `apidoc_value`：
 
 ```proto

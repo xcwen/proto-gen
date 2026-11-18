@@ -212,6 +212,13 @@ impl<'a> Builder<'a> {
         }
     }
     pub fn inline(&mut self, m: MessageDescriptor) -> Result<Value> {
+        if m.name() == "apidoc_in" && m.oneofs().any(|g| !g.is_synthetic()) {
+            ensure!(
+                !self.output,
+                "apidoc_in is only supported in request documentation"
+            );
+            return self.discriminated_input(m);
+        }
         // Documentation-only value unions describe native JSON values, without arm-name wrappers.
         if m.name() == "apidoc_value" {
             ensure!(
@@ -283,53 +290,54 @@ impl<'a> Builder<'a> {
         }
         Ok(schema)
     }
+    fn discriminated_input(&mut self, m: MessageDescriptor) -> Result<Value> {
+        let groups: Vec<_> = m.oneofs().filter(|o| !o.is_synthetic()).collect();
+        ensure!(
+            groups.len() == 1 && m.fields().all(|f| f.containing_oneof().is_some()),
+            "apidoc_in needs exactly one oneof"
+        );
+        let group = &groups[0];
+        let mut branches = vec![];
+        for f in group.fields() {
+            let Kind::Message(child) = f.kind() else {
+                bail!("apidoc_in arms must be messages")
+            };
+            let mut branch = self.inline(child)?;
+            ensure!(
+                branch["properties"].get(group.name()).is_none(),
+                "discriminator conflicts with a field"
+            );
+            let mut properties = Map::new();
+            properties.insert(
+                group.name().into(),
+                json!({"type":"string","const":f.name()}),
+            );
+            properties.append(branch["properties"].as_object_mut().unwrap());
+            branch["x-apifox-orders"] = json!(properties.keys().collect::<Vec<_>>());
+            branch["properties"] = Value::Object(properties);
+            if branch.get("required").is_none() {
+                branch["required"] = json!([]);
+            }
+            branch["required"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, json!(group.name()));
+            branches.push(branch);
+        }
+        Ok(json!({"oneOf":branches}))
+    }
     pub fn input(&mut self, a: &Endpoint) -> Result<Value> {
-        if let Some(m) = self
+        let message = self
             .workspace
             .pool
             .get_message_by_name(&format!("{}.apidoc_in", a.package))
-        {
-            let groups: Vec<_> = m.oneofs().filter(|o| !o.is_synthetic()).collect();
-            ensure!(
-                groups.len() == 1 && m.fields().all(|f| f.containing_oneof().is_some()),
-                "apidoc_in needs exactly one oneof"
-            );
-            let group = &groups[0];
-            let mut branches = vec![];
-            for f in group.fields() {
-                let Kind::Message(child) = f.kind() else {
-                    bail!("apidoc_in arms must be messages")
-                };
-                let mut branch = self.inline(child)?;
-                ensure!(
-                    branch["properties"].get(group.name()).is_none(),
-                    "discriminator conflicts with a field"
-                );
-                let mut properties = Map::new();
-                properties.insert(
-                    group.name().into(),
-                    json!({"type":"string","const":f.name()}),
-                );
-                properties.append(branch["properties"].as_object_mut().unwrap());
-                branch["x-apifox-orders"] = json!(properties.keys().collect::<Vec<_>>());
-                branch["properties"] = Value::Object(properties);
-                if branch.get("required").is_none() {
-                    branch["required"] = json!([]);
-                }
-                branch["required"]
-                    .as_array_mut()
-                    .unwrap()
-                    .insert(0, json!(group.name()));
-                branches.push(branch);
-            }
-            return Ok(json!({"oneOf":branches}));
-        }
-        self.inline(
-            self.workspace
-                .pool
-                .get_message_by_name(&format!("{}.in", a.package))
-                .context("missing input type")?,
-        )
+            .or_else(|| {
+                self.workspace
+                    .pool
+                    .get_message_by_name(&format!("{}.in", a.package))
+            })
+            .context("missing input type")?;
+        self.inline(message)
     }
 }
 fn folder(path: &[String]) -> String {
@@ -466,8 +474,9 @@ pub fn document(a: &Endpoint, w: &Workspace, project: &Project) -> Result<Value>
     if let Some(properties) = input_schema.get("properties").and_then(Value::as_object) {
         let message = w
             .pool
-            .get_message_by_name(&format!("{}.in", a.package))
-            .unwrap();
+            .get_message_by_name(&format!("{}.apidoc_in", a.package))
+            .or_else(|| w.pool.get_message_by_name(&format!("{}.in", a.package)))
+            .context("missing input type")?;
         let mut body = Map::new();
         let mut required = vec![];
         for (name, schema) in properties {
