@@ -14,7 +14,7 @@ GENERATOR=$(sh install.sh v0.4.2 .tools/proto-gen)
 "$GENERATOR" openapi --config ../node-core/proto/generator.toml --out /tmp/openapi.json
 ```
 
-发布时修改 `Cargo.toml` 的版本并执行 `./release.sh`。脚本在本地编译当前源码，成功推送后将本机 Release 程序安装到相邻的 `node-core`、`aigc-php-core`、`aigc-php-core-co`、`go-core`、`rust-core` 项目的 `.tools/proto-gen/<标签>/<本机平台>/`，并将已有的 `proto/proto-gen.version` 同步为本次 `v` 前缀标签；缺失的项目会提示跳过。这些版本文件保留为各业务仓库的未提交改动。本地安装会复用已有的本机 protoc / protoc-gen-go 工具链，并同步 schema 和文档，无需等待 GitHub Actions。其他机器仍通过准备命令下载发布版。
+发布时修改 `Cargo.toml` 的版本并执行 `./release.sh`。脚本在本地编译当前源码，成功推送后将本机 Release 程序安装到相邻的 `node-core`、`aigc-php-core`、`aigc-php-core-co`、`go-core`、`rust-core` 项目的 `.tools/proto-gen/<标签>/<本机平台>/`，并将已有的 `proto/proto-gen.version` 同步为本次 `v` 前缀标签；缺失的项目会提示跳过。这些版本文件保留为各业务仓库的未提交改动。本地安装会复用已有的本机 protoc / protoc-gen-go 工具链，并同步 schema 和文档，无需等待 GitHub Actions。其他机器仍通过准备命令下载发布版。若远端已存在同名标签，脚本直接编译当前工作区源码并刷新五个项目的本机程序及版本文件，允许本地源码有未提交改动，不再要求升级版本号，也不创建或推送标签。
 
 业务仓库先显式执行 `./tools/proto/prepare.sh`，按 `proto/proto-gen.version` 下载 GitHub Release，自动选择
 macOS/Linux x86_64/ARM64，核对 SHA256SUMS 并缓存。缓存命中时无需联网。

@@ -11,8 +11,8 @@ case "${1:-}" in
     -h|--help)
         printf '%s\n' '用法：./release.sh' \
             '读取 Cargo.toml 版本，同步 Cargo.lock，运行检查，提交并推送 main 和版本标签。' \
-            '本地编译当前程序；推送成功后替换相邻五个业务项目的程序缓存，并同步版本文件。' \
-            'GitHub Actions 随后构建四个平台并发布 Release。其他代码改动请先提交。'
+            '新标签推送成功后更新本机项目；远端标签已存在时，直接编译当前源码并更新本机程序和版本文件。' \
+            '首次发布由 GitHub Actions 构建四个平台；首次发布前请先提交其他代码改动。'
         exit 0
         ;;
     '') ;;
@@ -25,18 +25,6 @@ cd "$RELEASE_ROOT"
 for RELEASE_COMMAND in git cargo python3; do
     command -v "$RELEASE_COMMAND" >/dev/null 2>&1 || die "缺少命令：$RELEASE_COMMAND"
 done
-
-RELEASE_BRANCH=$(git symbolic-ref --quiet --short HEAD) || die '请切换到 main 分支。'
-[ "$RELEASE_BRANCH" = main ] || die '请在 main 分支发布。'
-git remote get-url origin >/dev/null || die '未配置 origin 远端。'
-
-# Keep unrelated work out of the release commit, including already staged files.
-RELEASE_OTHER_CHANGES=$(git status --porcelain=v1 --untracked-files=all -- . \
-    ':(top,exclude)Cargo.toml' ':(top,exclude)Cargo.lock' ':(top,exclude)release.sh')
-if [ -n "$RELEASE_OTHER_CHANGES" ]; then
-    printf '%s\n' "$RELEASE_OTHER_CHANGES" >&2
-    die '请先提交以上代码改动，再运行发布；脚本只自动提交 Cargo.toml、Cargo.lock 和 release.sh。'
-fi
 
 RELEASE_METADATA=$(cargo metadata --no-deps --format-version 1)
 RELEASE_VERSION=$(printf '%s\n' "$RELEASE_METADATA" | python3 -c '
@@ -57,7 +45,26 @@ RELEASE_TAG="v$RELEASE_VERSION"
 printf '准备发布 proto-gen %s\n' "$RELEASE_TAG"
 
 RELEASE_REMOTE_TAG=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")
-[ -z "$RELEASE_REMOTE_TAG" ] || die "远端标签 $RELEASE_TAG 已存在，请升级 Cargo.toml 版本。"
+if [ -n "$RELEASE_REMOTE_TAG" ]; then
+    printf '远端标签 %s 已存在，编译当前源码并更新本机项目...\n' "$RELEASE_TAG"
+    # Local refresh also accepts uncommitted source changes and synchronizes Cargo.lock.
+    cargo build --release --bin proto-gen
+    python3 tools/update-projects.py "$RELEASE_ROOT" "$RELEASE_TAG"
+    printf '本机程序和项目版本已更新为 %s。\n' "$RELEASE_TAG"
+    exit 0
+fi
+
+RELEASE_BRANCH=$(git symbolic-ref --quiet --short HEAD) || die '请切换到 main 分支。'
+[ "$RELEASE_BRANCH" = main ] || die '请在 main 分支发布。'
+git remote get-url origin >/dev/null || die '未配置 origin 远端。'
+
+# Keep unrelated work out of the release commit, including already staged files.
+RELEASE_OTHER_CHANGES=$(git status --porcelain=v1 --untracked-files=all -- . \
+    ':(top,exclude)Cargo.toml' ':(top,exclude)Cargo.lock' ':(top,exclude)release.sh')
+if [ -n "$RELEASE_OTHER_CHANGES" ]; then
+    printf '%s\n' "$RELEASE_OTHER_CHANGES" >&2
+    die '请先提交以上代码改动，再运行发布；脚本只自动提交 Cargo.toml、Cargo.lock 和 release.sh。'
+fi
 
 RELEASE_REUSE_TAG=0
 if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then

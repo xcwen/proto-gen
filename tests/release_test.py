@@ -32,16 +32,19 @@ with tempfile.TemporaryDirectory(prefix='proto release ') as directory:
     fake_bin.mkdir()
     git = fake_bin / 'git'
     git.write_text('''#!/bin/sh
+printf '%s\\n' "$1" >> "$RELEASE_TEST_GIT_LOG"
 case "$1" in
  symbolic-ref) printf 'main\\n' ;;
  remote) printf 'https://example.invalid/proto-gen.git\\n' ;;
+ ls-remote) if [ "$RELEASE_TEST_REMOTE_TAG" = 1 ]; then printf 'abc refs/tags/v1.2.3\\n'; fi ;;
+ status) if [ "$RELEASE_TEST_DIRTY" = 1 ]; then printf ' M src/main.rs\\n'; fi ;;
  show-ref) exit 1 ;;
  push) exit "${RELEASE_TEST_PUSH_EXIT:-0}" ;;
 esac
 ''')
     cargo = fake_bin / 'cargo'
     metadata = json.dumps({'packages': [{'manifest_path': str(repo / 'Cargo.toml'), 'version': '1.2.3'}]})
-    cargo.write_text('#!/bin/sh\nif [ "$1" = metadata ]; then\ncat <<\'JSON\'\n'
+    cargo.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$RELEASE_TEST_CARGO_LOG"\nif [ "$1" = metadata ]; then\ncat <<\'JSON\'\n'
                      + metadata + '\nJSON\nfi\n')
     for executable in (git, cargo):
         executable.chmod(0o755)
@@ -65,9 +68,17 @@ esac
     unrelated = workspace / 'node-core/notes.txt'
     unrelated.write_text('keep local changes\n')
 
-    def run(push_exit=0):
+    git_log = workspace / 'git.log'
+    cargo_log = workspace / 'cargo.log'
+
+    def run(push_exit=0, remote_tag=False, dirty=False):
+        git_log.write_text('')
+        cargo_log.write_text('')
         env = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ['PATH'],
-                   RELEASE_TEST_PUSH_EXIT=str(push_exit))
+                   RELEASE_TEST_PUSH_EXIT=str(push_exit),
+                   RELEASE_TEST_REMOTE_TAG=str(int(remote_tag)),
+                   RELEASE_TEST_DIRTY=str(int(dirty)), RELEASE_TEST_GIT_LOG=str(git_log),
+                   RELEASE_TEST_CARGO_LOG=str(cargo_log))
         return subprocess.run(['sh', str(repo / 'release.sh')], env=env, cwd=repo,
                               text=True, capture_output=True)
 
@@ -100,6 +111,25 @@ esac
     mtimes = [p.stat().st_mtime_ns for p in versions]
     assert run().returncode == 0
     assert [p.stat().st_mtime_ns for p in versions] == mtimes
+
+    # An existing remote tag must refresh the actual binary and pins even when
+    # current source is dirty, without committing, retagging or pushing.
+    binary.write_text('#!/bin/sh\n# rebuilt current source\nprintf "proto-gen 1.2.3\\n"\n')
+    for pin in versions:
+        pin.write_text('v0.1.0\n')
+    refreshed = run(remote_tag=True, dirty=True)
+    assert refreshed.returncode == 0, refreshed.stderr
+    assert '远端标签 v1.2.3 已存在' in refreshed.stdout
+    assert 'build --release --bin proto-gen' in cargo_log.read_text().splitlines()
+    assert all(p.read_text() == 'v1.2.3\n' for p in versions)
+    for project in PROJECTS:
+        installed = workspace / project / '.tools/proto-gen/v1.2.3' / host / 'proto-gen'
+        assert installed.read_bytes() == binary.read_bytes()
+    assert not {'add', 'commit', 'tag', 'push'}.intersection(git_log.read_text().splitlines())
+
+    rejected = run(dirty=True)
+    assert rejected.returncode != 0
+    assert '请先提交' in rejected.stderr
 
     shutil.rmtree(workspace / PROJECTS[-1])
     missing = run()
