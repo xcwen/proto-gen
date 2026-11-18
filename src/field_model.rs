@@ -603,7 +603,7 @@ fn make_model(
             &["minLength", "maxLength", "pattern", "format"][..],
             !collection && matches!(kind, Kind::String | Kind::Bytes),
         ),
-        (&["minItems", "maxItems"][..], !single && field.is_list()),
+        (&["minItems", "maxItems"][..], collection),
     ] {
         ensure!(valid || keys.iter().all(|k| meta.get(*k).is_none()), "constraint incompatible with Proto type; collection element constraints belong in items");
     }
@@ -717,7 +717,13 @@ fn validate_value(
         }
     }
     for (min, max, len) in [
-        ("minItems", "maxItems", v.as_array().map(Vec::len)),
+        (
+            "minItems",
+            "maxItems",
+            v.as_array()
+                .map(Vec::len)
+                .or_else(|| v.as_object().map(Map::len)),
+        ),
         (
             "minLength",
             "maxLength",
@@ -739,6 +745,7 @@ fn validate_value(
 pub fn rules(pool: &DescriptorPool, models: &Fields) -> Value {
     let mut active: BTreeSet<String> = pool
         .all_messages()
+        .filter(|m| m.name() != "apidoc_value")
         .filter(|m| {
             m.fields().any(|f| {
                 models.get(f.full_name()).is_some_and(|x| {
@@ -752,6 +759,9 @@ pub fn rules(pool: &DescriptorPool, models: &Fields) -> Value {
     loop {
         let old = active.len();
         for m in pool.all_messages() {
+            if m.name() == "apidoc_value" {
+                continue;
+            }
             if m.fields().any(
                 |f| matches!(leaf(&f),Kind::Message(child)if active.contains(child.full_name())),
             ) {

@@ -50,6 +50,8 @@ jobs:
         run: cargo "+$RUST_TOOLCHAIN" clippy --all-targets --locked -- -D warnings
       - name: Test download installer
         run: python3 tests/install_test.py
+      - name: Test local project updates
+        run: python3 tests/release_test.py
 
   build:
     needs: verify

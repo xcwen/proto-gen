@@ -55,6 +55,30 @@ PHP、Node、Rust、Go 在转换 Proto JSON 之前执行生成的枚举校验，
 
 ## 接口文档及 HTTP
 
+`apidoc_in` 通过一个 `oneof` 定义请求分支，oneof 名作为区分字段，分支名作为取值。
+如果分支内某个字段本身允许不同的原生 JSON 类型，可在文档模型中使用 `apidoc_value`：
+
+```proto
+message apidoc_value {
+  oneof value {
+    string text = 1 [(common.field) = { min_length: 1 examples: "客户申请退款" }]; // 文本
+    google.protobuf.Struct object = 2; // JSON 对象
+    google.protobuf.ListValue array = 3; // JSON 数组
+  }
+}
+```
+
+`apidoc_value` 可以只包含一个名为 `value` 的 oneof。OpenAPI 将其输出为原生值的 `oneOf`，
+各分支以字段说明首行命名，并保留示例和约束；`state` 仍可直接传字符串、对象或数组，
+不增加 `text/object/array` 包装。此类型只用于 `apidoc_in` 的文档模型，不用于运行时 `in/out`；
+分支约束仅供文档校验，不进入服务端枚举校验，运行时继续使用真实协议和业务校验。
+
+它也可以只包含一个名为 `value` 的 `map` 或 `repeated` 字段，文档直接输出原生对象或数组，
+不生成 `value` 包装。可将 `apidoc_value` 嵌套在不同文档消息中，以复用多个独立的原生类型定义。
+例如，问题映射可用 `map<string, Question.apidoc_value>`，其中问题值再用oneof展示各类问题；
+外层单值消息字段仍可标记为必填。`min_items/max_items` 对数组输出为 `minItems/maxItems`，
+对map输出为 `minProperties/maxProperties`；元素约束继续写在 `items` 中。
+
 统一输出并离线验证完整 OpenAPI 3.1，使用官方内置 Schema 和 JSON Schema Draft 2020-12 校验；共享消息进入 components，支持递归引用。目录只取 category_path，每项一层；迁移时已拆分旧斜杠目录。标签、PROJECT:*、语言、责任人、弃用状态/原因均独立输出。认证默认继承项目设置，PUBLIC 不自动取消统一认证。
 
 GET/HEAD 字段使用 query，不生成 body。location 可显式选择 BODY/QUERY/HEADER/COOKIE/PATH，http_name 定义文档参数名；不在接口中重复认证头。path 占位符必须与必填路径参数完全对应。文档参数位置不自动增加服务端绑定，使用前须与实际 HTTP 入口约定一致。无法表达的 GET+apidoc oneof 等组合明确报错。

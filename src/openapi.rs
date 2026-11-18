@@ -198,12 +198,54 @@ impl<'a> Builder<'a> {
             } else {
                 json!({"type":"object","additionalProperties":item})
             };
-            self.annotations(schema, &outer, &kind)
+            let mut schema = self.annotations(schema, &outer, &kind)?;
+            if field.is_map() {
+                for (from, to) in [("minItems", "minProperties"), ("maxItems", "maxProperties")] {
+                    if let Some(value) = schema.as_object_mut().unwrap().remove(from) {
+                        schema[to] = value;
+                    }
+                }
+            }
+            Ok(schema)
         } else {
             self.annotations(item, &model, &kind)
         }
     }
     pub fn inline(&mut self, m: MessageDescriptor) -> Result<Value> {
+        // Documentation-only value unions describe native JSON values, without arm-name wrappers.
+        if m.name() == "apidoc_value" {
+            ensure!(
+                !self.output,
+                "apidoc_value is only supported in request documentation"
+            );
+            let groups: Vec<_> = m.oneofs().filter(|g| !g.is_synthetic()).collect();
+            let fields: Vec<_> = m.fields().collect();
+            if groups.is_empty()
+                && fields.len() == 1
+                && fields[0].name() == "value"
+                && (fields[0].is_map() || fields[0].is_list())
+            {
+                return self.field(&fields[0]);
+            }
+            ensure!(
+                groups.len() == 1
+                    && groups[0].name() == "value"
+                    && m.fields().all(|f| f.containing_oneof().is_some()),
+                "apidoc_value needs exactly one oneof value or one collection field value, and no other fields"
+            );
+            let mut variants = vec![];
+            for field in groups[0].fields() {
+                let mut schema = self.field(&field)?;
+                let description = &self.workspace.fields[field.full_name()].description;
+                schema["title"] = json!(description
+                    .lines()
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(field.name()));
+                variants.push(schema);
+            }
+            return Ok(json!({"oneOf":variants}));
+        }
         let mut props = Map::new();
         let mut required = vec![];
         for f in m.fields() {

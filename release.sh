@@ -11,6 +11,7 @@ case "${1:-}" in
     -h|--help)
         printf '%s\n' '用法：./release.sh' \
             '读取 Cargo.toml 版本，同步 Cargo.lock，运行检查，提交并推送 main 和版本标签。' \
+            '本地编译当前程序；推送成功后替换相邻五个业务项目的程序缓存，并同步版本文件。' \
             'GitHub Actions 随后构建四个平台并发布 Release。其他代码改动请先提交。'
         exit 0
         ;;
@@ -75,6 +76,9 @@ printf '%s\n' '运行测试、Clippy 和安装器检查...'
 cargo test --locked
 cargo clippy --all-targets --locked -- -D warnings
 python3 tests/install_test.py
+python3 tests/release_test.py
+printf '%s\n' '编译本机 Release 程序...'
+cargo build --release --locked --bin proto-gen
 
 if [ "$RELEASE_REUSE_TAG" -eq 0 ]; then
     git add -- Cargo.toml Cargo.lock release.sh
@@ -89,5 +93,7 @@ fi
 printf '推送 main 和 %s，触发 GitHub Actions 发布...\n' "$RELEASE_TAG"
 # Publish the branch and tag together; a failed push can be retried with the same script.
 git push --atomic origin 'HEAD:refs/heads/main' "refs/tags/$RELEASE_TAG"
+printf '%s\n' '用本地编译程序更新业务项目...'
+python3 tools/update-projects.py "$RELEASE_ROOT" "$RELEASE_TAG"
 printf '已推送 %s；GitHub Actions 正在检查和构建，完成后生成 Release。\n' "$RELEASE_TAG"
 printf '%s\n' '查看进度：https://github.com/xcwen/proto-gen/actions/workflows/release.yml'
