@@ -38,6 +38,11 @@ message ApiOptions {
   AuthorizationOptions authorization = 18;
   // Fully qualified shared response message; omit the local message out when set.
   string output = 19;
+  // Fully qualified shared request message; omit the local message in when set.
+  string input = 20;
+  // Documentation-only message references; fall back to local apidoc_in/out, then input/output.
+  string apidoc_in = 21;
+  string apidoc_out = 22;
 
   enum Auth {
     AUTH_UNSPECIFIED = 0;

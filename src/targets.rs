@@ -41,25 +41,30 @@ pub(crate) fn generate_with_bindings(
     let mut classes = serde_json::Map::new();
     let mut operations = serde_json::Map::new();
     for a in &work.endpoints {
-        let name = format!("{}.in", a.package);
+        let name = a.input();
         inputs.insert(a.path.clone(), json!(name));
         classes.insert(
-            format!(
-                "Proto\\Project\\{}\\{}__{}\\in",
-                crate::studly(&a.group),
-                a.controller,
-                a.action
-            ),
+            if a.meta.input.is_empty() {
+                format!(
+                    "Proto\\Project\\{}\\{}__{}\\in",
+                    crate::studly(&a.group),
+                    a.controller,
+                    a.action
+                )
+            } else {
+                php_message_class(work, &name)
+                    .trim_start_matches('\\')
+                    .to_owned()
+            },
             json!(name),
         );
         if cfg.php() && a.meta.tags.iter().any(|t| t == "_uri_no_project") {
             inputs.insert(format!("/{}/{}", a.controller, a.action), json!(name));
         }
-        if let Some(doc) = work
-            .pool
-            .get_message_by_name(&format!("{}.apidoc_in", a.package))
         {
-            if let Some(group) = doc.oneofs().find(|o| !o.is_synthetic()) {
+            let doc = a.documentation_message(&work.pool, false);
+            let group = doc.oneofs().find(|o| !o.is_synthetic());
+            if let Some(group) = group.filter(|_| doc.full_name() != name) {
                 let branches: serde_json::Map<_, _> = group
                     .fields()
                     .filter_map(|f| {
@@ -124,6 +129,19 @@ pub fn php_value(v: &Value) -> String {
         ),
     }
 }
+fn php_message_class(w: &Workspace, name: &str) -> String {
+    let message = w.pool.get_message_by_name(name).unwrap();
+    let file = message.parent_file();
+    let options = file.file_descriptor_proto().options.as_ref();
+    let ns = options
+        .and_then(|o| o.php_namespace.as_deref())
+        .map(str::to_owned)
+        .unwrap_or_else(|| message.package_name().replace('.', "\\"));
+    let prefix = options
+        .and_then(|o| o.php_class_prefix.as_deref())
+        .unwrap_or("");
+    format!("\\{ns}\\{prefix}{}", message.name())
+}
 fn php(
     cfg: &Config,
     out: &Config,
@@ -136,22 +154,8 @@ fn php(
     for a in &w.endpoints {
         let g = crate::studly(&a.group);
         let c = crate::studly(&a.controller);
-        let namespace = format!("\\Proto\\Project\\{g}\\{}__{}", a.controller, a.action);
-        let output_class = if a.meta.output.is_empty() {
-            format!("{namespace}\\out")
-        } else {
-            let message = w.pool.get_message_by_name(&a.output()).unwrap();
-            let file = message.parent_file();
-            let options = file.file_descriptor_proto().options.as_ref();
-            let ns = options
-                .and_then(|o| o.php_namespace.as_deref())
-                .map(str::to_owned)
-                .unwrap_or_else(|| message.package_name().replace('.', "\\"));
-            let prefix = options
-                .and_then(|o| o.php_class_prefix.as_deref())
-                .unwrap_or("");
-            format!("\\{ns}\\{prefix}{}", message.name())
-        };
+        let input_class = php_message_class(w, &a.input());
+        let output_class = php_message_class(w, &a.output());
         let base = format!("/{}/{}", a.controller, a.action);
         let mut paths = vec![a.path.clone()];
         if a.meta.tags.iter().any(|t| t == "_uri_no_project") {
@@ -169,7 +173,7 @@ fn php(
                     config["authorization"] = json!(authorization);
                 }
             }
-            routes.push_str(&format!("    [\\App\\Controllers\\{g}\\{c}::class, {}, {namespace}\\in::class, {output_class}::class, {}, {}, {}, {}],\n",php_string(&a.action),php_string(&a.meta.title),php_string(&a.auth()),php_string(&path),php_value(&config)));
+            routes.push_str(&format!("    [\\App\\Controllers\\{g}\\{c}::class, {}, {input_class}::class, {output_class}::class, {}, {}, {}, {}],\n",php_string(&a.action),php_string(&a.meta.title),php_string(&a.auth()),php_string(&path),php_value(&config)));
         }
     }
     routes.push_str("];\n");
@@ -410,26 +414,30 @@ fn generate_bindings(cfg: &Config, w: &Workspace, roots: &[String], output: &Pat
             command(Command::new(protoc()).current_dir(w.stage.path()).arg("-I.").arg(format!("--plugin=protoc-gen-ts_proto={}",plugin.display())).arg(format!("--ts_proto_out={}",dest.display())).arg("--ts_proto_opt=esModuleInterop=true,forceLong=string,outputJsonMethods=true,outputEncodeMethods=false,snakeToCamel=false").args(roots))?;
             fix_typescript(&dest)?;
             for api in &w.endpoints {
-                if api.meta.output.is_empty() || !roots.contains(&api.staged) {
+                if !roots.contains(&api.staged) {
                     continue;
                 }
-                let message = w.pool.get_message_by_name(&api.output()).unwrap();
-                // API modules keep exporting `out`, now as the shared codec and type.
-                let depth = Path::new(&api.staged)
-                    .parent()
-                    .unwrap()
-                    .components()
-                    .count();
-                let module =
-                    "../".repeat(depth) + message.parent_file().name().trim_end_matches(".proto");
-                let path = dest.join(Path::new(&api.staged).with_extension("ts"));
-                let mut text = fs::read_to_string(&path)?;
-                text.push_str(&format!(
-                    "\nexport {{ {} as out }} from '{}';\n",
-                    message.name(),
-                    module
-                ));
-                fs::write(path, text)?;
+                for (reference, export) in [(&api.meta.input, "_in"), (&api.meta.output, "out")] {
+                    if reference.is_empty() {
+                        continue;
+                    }
+                    let message = w.pool.get_message_by_name(reference).unwrap();
+                    let depth = Path::new(&api.staged)
+                        .parent()
+                        .unwrap()
+                        .components()
+                        .count();
+                    let module = "../".repeat(depth)
+                        + message.parent_file().name().trim_end_matches(".proto");
+                    let path = dest.join(Path::new(&api.staged).with_extension("ts"));
+                    let mut text = fs::read_to_string(&path)?;
+                    text.push_str(&format!(
+                        "\nexport {{ {} as {export} }} from '{}';\n",
+                        message.name(),
+                        module
+                    ));
+                    fs::write(path, text)?;
+                }
             }
         }
         "go" => {
@@ -478,20 +486,28 @@ fn generate_bindings(cfg: &Config, w: &Workspace, roots: &[String], output: &Pat
             }
             copy(&code.path().join("gen/proto"), output)?;
             for api in &w.endpoints {
-                if api.meta.output.is_empty() || !roots.contains(&api.staged) {
+                if !roots.contains(&api.staged) {
                     continue;
                 }
-                let message = w.pool.get_message_by_name(&api.output()).unwrap();
-                let package: String = format!("{}{}", api.controller, api.action)
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric())
-                    .collect();
-                let path = output.join(format!(
-                    "{}/{}__{}/output_alias.go",
-                    api.group, api.controller, api.action
-                ));
-                put(&path, format!("// Code generated by proto-gen. DO NOT EDIT.\npackage {package}\nimport shared \"{module}/gen/proto/common\"\ntype Out = shared.{}\n", message.name().to_upper_camel_case()))?;
-                command(Command::new("gofmt").arg("-w").arg(path))?;
+                for (reference, name, export) in [
+                    (&api.meta.input, "input", "In"),
+                    (&api.meta.output, "output", "Out"),
+                ] {
+                    if reference.is_empty() {
+                        continue;
+                    }
+                    let message = w.pool.get_message_by_name(reference).unwrap();
+                    let package: String = format!("{}{}", api.controller, api.action)
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .collect();
+                    let path = output.join(format!(
+                        "{}/{}__{}/{name}_alias.go",
+                        api.group, api.controller, api.action
+                    ));
+                    put(&path, format!("// Code generated by proto-gen. DO NOT EDIT.\npackage {package}\nimport shared \"{module}/gen/proto/common\"\ntype {export} = shared.{}\n", message.name().to_upper_camel_case()))?;
+                    command(Command::new("gofmt").arg("-w").arg(path))?;
+                }
             }
         }
         _ => unreachable!(),
@@ -513,7 +529,8 @@ fn fix_typescript(dest: &Path) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join("\n")
                     + "\n";
-                if !p.to_string_lossy().contains("/common/") {
+                if !p.to_string_lossy().contains("/common/") && s.contains("export interface in {")
+                {
                     let i = s
                         .find("createBaseout")
                         .or_else(|| s.find("type Builtin"))

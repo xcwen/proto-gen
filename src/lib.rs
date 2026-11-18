@@ -99,11 +99,6 @@ pub(crate) fn generate_rust_cached(
     cache: Option<&mut incremental::Bindings>,
 ) -> Result<()> {
     let stage = &workspace.stage;
-    let packages: BTreeMap<String, String> = workspace
-        .endpoints
-        .iter()
-        .map(|a| (a.source.clone(), a.package.clone()))
-        .collect();
     let apis: Vec<Api> = workspace
         .endpoints
         .iter()
@@ -152,23 +147,21 @@ pub(crate) fn generate_rust_cached(
             continue;
         }
         let module = api.source.trim_end_matches(".proto").replace('/', "__");
-        let pkg = &packages[&api.source];
-        let rust_pkg = pkg
-            .split('.')
-            .map(|s| s.to_snake_case())
-            .collect::<Vec<_>>()
-            .join("::");
-        let output_message = pool.get_message_by_name(&api.output).unwrap();
-        let output_type = format!(
-            "{}::{}",
-            output_message
-                .package_name()
-                .split('.')
-                .map(ToSnakeCase::to_snake_case)
-                .collect::<Vec<_>>()
-                .join("::"),
-            output_message.name().to_upper_camel_case()
-        );
+        let message_type = |name: &str| {
+            let message = pool.get_message_by_name(name).unwrap();
+            format!(
+                "{}::{}",
+                message
+                    .package_name()
+                    .split('.')
+                    .map(ToSnakeCase::to_snake_case)
+                    .collect::<Vec<_>>()
+                    .join("::"),
+                message.name().to_upper_camel_case()
+            )
+        };
+        let input_type = message_type(&api.input);
+        let output_type = message_type(&api.output);
         let authorization_constant = api
             .authorization
             .as_ref()
@@ -184,7 +177,7 @@ pub(crate) fn generate_rust_cached(
             r#"
 #[allow(non_snake_case)]
 pub mod {module} {{
-    pub type In = crate::messages::{rust_pkg}::In;
+    pub type In = crate::messages::{input_type};
     pub type Out = crate::messages::{output_type};
     pub struct Endpoint;
     impl crate::Endpoint for Endpoint {{

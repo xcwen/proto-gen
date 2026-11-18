@@ -355,7 +355,13 @@ fn shared_output_rejects_unknown_unimported_and_conflicting_types() {
             _ => text + "\nmessage out {}\n",
         };
         fs::write(path, text).unwrap();
-        assert!(compiler::compile(&c.source, "typescript").is_err());
+        let error = compiler::compile(&c.source, "typescript")
+            .err()
+            .unwrap()
+            .to_string();
+        if edit == 1 {
+            assert_eq!(error, "root/test__sum.proto: output: \"common.voice_file_item_t\" 引用了公共消息，但当前协议未导入其定义文件。\n请在此协议的 import 区域添加：\n  import \"common/shared.proto\";\n仅在 output 字符串中填写类型名不会自动导入定义文件。");
+        }
     }
 }
 
@@ -427,6 +433,97 @@ fn shared_output_generates_native_bindings() {
             assert!(fs::read_to_string(path)
                 .unwrap()
                 .contains("other_item_t as out"));
+            project::run(&config, true).unwrap();
+        }
+    }
+}
+
+#[test]
+fn shared_input_generates_runtime_bindings_constraints_and_controller_fields() {
+    for target in ["php", "rust", "typescript", "go"] {
+        let (d, c) = shared_output_fixture(target);
+        let common = d.path().join("proto/src/common/shared.proto");
+        let text = fs::read_to_string(&common).unwrap();
+        fs::write(
+            &common,
+            text + r#"
+message request_t {string voice_file_id=1; optional int32 count=2;}
+message other_request_t {string token=1;}
+"#,
+        )
+        .unwrap();
+        let proto = d.path().join("proto/src/root/test__sum.proto");
+        let text = fs::read_to_string(&proto).unwrap();
+        fs::write(
+            &proto,
+            text.replace(
+                "output:\"common.voice_file_item_t\"",
+                "output:\"common.voice_file_item_t\" input:\"common.request_t\"",
+            )
+            .replace("message in { string voice_file_id = 1; }", ""),
+        )
+        .unwrap();
+        if target == "typescript" {
+            let Some(modules) = std::env::var_os("PROTO_GEN_TEST_NODE_MODULES") else {
+                continue;
+            };
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(modules, d.path().join("node_modules")).unwrap();
+        }
+        if target == "go" {
+            let Some(plugin) = std::env::var_os("PROTO_GEN_TEST_GO_PLUGIN") else {
+                continue;
+            };
+            fs::create_dir_all(d.path().join(".tools")).unwrap();
+            fs::copy(plugin, d.path().join(".tools/protoc-gen-go")).unwrap();
+            put(d.path(), "go.mod", "module go-core\n\ngo 1.24\n");
+        }
+        let config = d.path().join("proto/generator.toml");
+        project::run(&config, false).unwrap();
+        let rules: serde_json::Value =
+            serde_json::from_slice(&fs::read(c.output.join("input_constraints.json")).unwrap())
+                .unwrap();
+        assert_eq!(rules["inputs"]["/root/test/sum"], "common.request_t");
+        assert_eq!(
+            rules["php_classes"]["Proto\\Project\\Common\\request_t"],
+            "common.request_t"
+        );
+        let (path, expected) = match target {
+            "php" => (
+                c.output.join("Proto/cmd_list.php"),
+                "\\Proto\\Project\\Common\\request_t::class",
+            ),
+            "rust" => (
+                c.output.join("api.rs"),
+                "pub type In = crate::messages::common::RequestT;",
+            ),
+            "typescript" => (
+                c.output.join("proto/root/test__sum.ts"),
+                "export { request_t as _in } from '../common/shared';",
+            ),
+            _ => (
+                c.output.join("root/test__sum/input_alias.go"),
+                "type In = shared.RequestT",
+            ),
+        };
+        let generated = fs::read_to_string(&path).unwrap();
+        assert!(generated.contains(expected), "{generated}");
+        if target == "rust" {
+            let controller = fs::read_to_string(c.controllers.join("root/test.rs")).unwrap();
+            assert!(controller.contains("input.voice_file_id"), "{controller}");
+            assert!(controller.contains("input.count"));
+        }
+        project::run(&config, true).unwrap();
+        if target == "typescript" {
+            let text = fs::read_to_string(&proto).unwrap();
+            fs::write(
+                &proto,
+                text.replace("common.request_t", "common.other_request_t"),
+            )
+            .unwrap();
+            project::run(&config, false).unwrap();
+            let generated = fs::read_to_string(path).unwrap();
+            assert!(generated.contains("other_request_t as _in"));
             project::run(&config, true).unwrap();
         }
     }

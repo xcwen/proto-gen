@@ -77,7 +77,7 @@ PRIVATE 仅允许具备对应认证实现的 PHP 目标。
 所有 64 位整数的 JSON 表示统一为字符串，已删除 json_int64 数字策略。
 详见 [字段及配置契约](docs/field-and-project-options.md)、[Apifox 审查及实施说明](docs/apifox-audit-and-design.md)。
 
-需要直接复用公共响应消息时，在 `common.api` 中指定完整消息名，并 import 定义文件：
+需要复用公共消息时，在 `common.api` 中指定完整消息名，并 import 定义文件：
 
 ```proto
 import "common/api_options.proto";
@@ -90,10 +90,23 @@ option (common.api) = {
 message in { string voice_file_id = 1; }
 ```
 
-这是标准 Protobuf 自定义 option 语法；设置 `output` 后不再声明本地 `message out`。
-当前支持 `common/` 下的顶层公共消息。未设置时仍使用本地 `out`。
-TypeScript 导出公共消息的 `out` 别名（类型与 codec），Go 导出类型别名，PHP/Rust 路由直接引用公共类型；
-OpenAPI 和字段索引使用同一公共定义，响应 JSON 不增加嵌套层。
+这是标准 Protobuf 自定义 option 语法。四个类型配置的解析规则如下：
+
+| 配置 | 用途 | 未设置时 |
+| --- | --- | --- |
+| `input` | 运行时请求消息 | 当前接口的 `message in` |
+| `output` | 运行时响应消息 | 当前接口的 `message out` |
+| `apidoc_in` | 请求文档消息 | 当前接口的 `message apidoc_in`，不存在则使用实际 `input` |
+| `apidoc_out` | 响应文档消息 | 当前接口的 `message apidoc_out`，不存在则使用实际 `output` |
+
+显式配置与对应本地同名消息互斥。运行时引用支持 `common/` 下的顶层消息；文档引用也支持公共嵌套消息。
+例如 `input: "common.GetVoiceRequest"`、`apidoc_in: "common.VoiceDocs.Request"`、`apidoc_out: "common.VoiceDocs.Response"`。
+每个引用都必须显式 import 定义文件；仅在 option 字符串中填写类型名不会自动导入。
+TypeScript 保留 `_in` / `out` 的类型及 codec 导出，Go 保留 `In` / `Out` 类型别名；
+PHP/Rust 路由直接引用公共类型，输入约束和控制器骨架采用实际请求类型。
+`apidoc_in/out` 支持普通字段、单个 `oneof` 的分支和嵌套 `apidoc_value`，只覆盖文档结构；
+`apidoc_out` 描述标准 JSON 响应的 `data` 部分，`RAW_JSON` 时描述完整响应，其他响应模式继续沿用现有规则。
+字段索引保留接口本地查询键，运行时响应 JSON 不增加嵌套层。
 
 ## 安装与检查
 

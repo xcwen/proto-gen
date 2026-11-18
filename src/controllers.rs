@@ -236,10 +236,11 @@ pub fn generate_controllers(output: &Path, root: &Path, registry_path: &Path) ->
             rust_path
         ));
         // Inspect prost's actual Rust struct fields: handles keywords and oneof groups.
-        let package = api
+        let (package, input_name) = api
             .input
-            .strip_suffix(".in")
+            .rsplit_once('.')
             .context("invalid input message")?;
+        let input_name = input_name.to_upper_camel_case();
         let generated_name = package
             .split('.')
             .map(ToSnakeCase::to_snake_case)
@@ -253,7 +254,7 @@ pub fn generate_controllers(output: &Path, root: &Path, registry_path: &Path) ->
             .iter()
             .find_map(|item| {
                 if let Item::Struct(s) = item {
-                    if s.ident == "In" {
+                    if s.ident == input_name {
                         Some(s)
                     } else {
                         None

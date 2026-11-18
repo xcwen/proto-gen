@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn comment(file: &FileDescriptorProto, path: &[i32], php: bool) -> String {
     let s = file
@@ -77,6 +77,10 @@ fn key(file: &FileDescriptorProto, msg: &str, php: bool) -> String {
         )
     }
 }
+struct FieldIndex<'a> {
+    models: &'a crate::field_model::Fields,
+    documentation: BTreeSet<String>,
+}
 fn message(
     map: &mut BTreeMap<String, Value>,
     file: &FileDescriptorProto,
@@ -84,18 +88,25 @@ fn message(
     name: &str,
     path: &[i32],
     php: bool,
-    models: &crate::field_model::Fields,
+    index: &FieldIndex<'_>,
 ) -> Result<()> {
     let mut rows = vec![];
     for (i, f) in msg.field.iter().enumerate() {
         let oneof = f.oneof_index.filter(|_| f.proto3_optional != Some(true));
-        if php && oneof.is_some() && name != "apidoc_in" {
+        if php
+            && oneof.is_some()
+            && !matches!(name.rsplit('.').next(), Some("apidoc_in" | "apidoc_out"))
+            && !index
+                .documentation
+                .contains(&format!("{}.{name}", file.package()))
+        {
             continue;
         }
         let mut p = path.to_vec();
         p.extend([2, i as i32]);
         let full = format!("{}.{name}.{}", file.package(), f.name());
-        let model = models
+        let model = index
+            .models
             .get(&full)
             .with_context(|| format!("missing resolved metadata {full}"))?;
         let desc = if php {
@@ -193,7 +204,7 @@ fn message(
             &format!("{name}.{}", n.name()),
             &p,
             php,
-            models,
+            index,
         )?;
     }
     Ok(())
@@ -233,35 +244,49 @@ pub fn struct_map(
     php: bool,
 ) -> Result<BTreeMap<String, Value>> {
     let mut map = BTreeMap::new();
+    let index = FieldIndex {
+        models: &workspace.fields,
+        documentation: workspace
+            .endpoints
+            .iter()
+            .flat_map(|a| [&a.meta.apidoc_in, &a.meta.apidoc_out])
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect(),
+    };
     for file in workspace.pool.files() {
         let f = file.file_descriptor_proto();
         for (i, m) in f.message_type.iter().enumerate() {
-            message(
-                &mut map,
-                f,
-                m,
-                m.name(),
-                &[4, i as i32],
-                php,
-                &workspace.fields,
-            )?;
+            message(&mut map, f, m, m.name(), &[4, i as i32], php, &index)?;
         }
         for (i, e) in f.enum_type.iter().enumerate() {
             enumeration(&mut map, f, e, &[5, i as i32], php);
         }
     }
-    // Keep the legacy endpoint.out lookup contract for documentation consumers.
+    // Preserve endpoint-local lookup keys for consumers of the field index.
     for api in &workspace.endpoints {
-        if !api.meta.output.is_empty() {
-            let message = workspace.pool.get_message_by_name(&api.output()).unwrap();
+        for (name, reference) in [
+            ("in", &api.meta.input),
+            ("out", &api.meta.output),
+            ("apidoc_in", &api.meta.apidoc_in),
+            ("apidoc_out", &api.meta.apidoc_out),
+        ] {
+            if reference.is_empty() {
+                continue;
+            }
+            let message = workspace.pool.get_message_by_name(reference).unwrap();
+            let local_name = message
+                .full_name()
+                .strip_prefix(&format!("{}.", message.package_name()))
+                .unwrap();
             let rows = map[&key(
                 message.parent_file().file_descriptor_proto(),
-                message.name(),
+                local_name,
                 php,
             )]
                 .clone();
             let file = workspace.pool.get_file_by_name(&api.staged).unwrap();
-            map.insert(key(file.file_descriptor_proto(), "out", php), rows);
+            map.insert(key(file.file_descriptor_proto(), name, php), rows);
         }
     }
     Ok(map)

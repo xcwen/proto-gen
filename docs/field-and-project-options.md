@@ -55,7 +55,28 @@ PHP、Node、Rust、Go 在转换 Proto JSON 之前执行生成的枚举校验，
 
 ## 接口文档及 HTTP
 
-`apidoc_in` 可通过一个 `oneof` 定义请求分支，oneof 名作为区分字段，分支名作为取值。
+`common.api` 的 `input` / `output` 指定运行时请求和响应的完整公共消息名（`common/` 下顶层消息），
+`apidoc_in` / `apidoc_out` 指定文档请求和响应的完整公共消息名（支持嵌套消息）。
+引用必须显式 import 定义文件，且不能同时声明对应的本地同名消息。
+未设置运行时类型时使用本地 `in` / `out`；未设置文档类型时优先本地 `apidoc_in` / `apidoc_out`，
+没有本地文档消息则使用实际 `input` / `output`。
+
+```proto
+import "common/contracts.proto";
+option (common.api) = {
+  title: "任务查询"
+  auth: SESSION
+  input: "common.TaskRequest"
+  output: "common.TaskResponse"
+  apidoc_in: "common.TaskDocs.Request"
+  apidoc_out: "common.TaskDocs.Response"
+};
+```
+
+本地 `apidoc_in` / `apidoc_out` 或显式引用的文档消息可通过一个 `oneof` 定义分支，
+oneof 名作为区分字段，分支名作为取值。`apidoc_out` 的分支与请求文档采用同样的平铺结构，
+标准响应时覆盖 `data`，`RAW_JSON` 时覆盖完整响应；不改变运行时 `out` 的类型、codec 或路由。
+只有响应文档的分支会应用文档分支语义，普通运行时 oneof 继续保持字段包装和互斥规则。
 也可使用普通字段定义文档输入对象。共享消息中的嵌套 `apidoc_in` 同样支持区分字段分支，
 可作为数组元素复用单任务定义；根接口使用普通 `apidoc_in` 定义批次编号、任务数组等字段。
 如果分支内某个字段本身允许不同的原生 JSON 类型，可在文档模型中使用 `apidoc_value`：
@@ -72,7 +93,7 @@ message apidoc_value {
 
 `apidoc_value` 可以只包含一个名为 `value` 的 oneof。OpenAPI 将其输出为原生值的 `oneOf`，
 各分支以字段说明首行命名，并保留示例和约束；`state` 仍可直接传字符串、对象或数组，
-不增加 `text/object/array` 包装。此类型只用于 `apidoc_in` 的文档模型，不用于运行时 `in/out`；
+不增加 `text/object/array` 包装。此类型只用于 `apidoc_in` / `apidoc_out` 的文档模型，不用于运行时 `in/out`；
 分支约束仅供文档校验，不进入服务端枚举校验，运行时继续使用真实协议和业务校验。
 
 它也可以只包含一个名为 `value` 的 `map` 或 `repeated` 字段，文档直接输出原生对象或数组，

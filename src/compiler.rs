@@ -97,6 +97,12 @@ pub struct Metadata {
     pub authorization: Option<crate::authorization::AuthorizationReference>,
     #[serde(default)]
     pub output: String,
+    #[serde(default)]
+    pub input: String,
+    #[serde(default)]
+    pub apidoc_in: String,
+    #[serde(default)]
+    pub apidoc_out: String,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -149,6 +155,29 @@ impl Endpoint {
         }
         value
     }
+    pub fn input(&self) -> String {
+        if self.meta.input.is_empty() {
+            format!("{}.in", self.package)
+        } else {
+            self.meta.input.clone()
+        }
+    }
+    pub fn documentation_message(
+        &self,
+        pool: &DescriptorPool,
+        output: bool,
+    ) -> prost_reflect::MessageDescriptor {
+        let (explicit, local, fallback) = if output {
+            (&self.meta.apidoc_out, "apidoc_out", self.output())
+        } else {
+            (&self.meta.apidoc_in, "apidoc_in", self.input())
+        };
+        if !explicit.is_empty() {
+            return pool.get_message_by_name(explicit).unwrap();
+        }
+        pool.get_message_by_name(&format!("{}.{local}", self.package))
+            .unwrap_or_else(|| pool.get_message_by_name(&fallback).unwrap())
+    }
     pub fn output(&self) -> String {
         if self.meta.output.is_empty() {
             format!("{}.out", self.package)
@@ -185,7 +214,7 @@ impl Endpoint {
             },
             auth: self.auth(),
             title: self.meta.title.clone(),
-            input: format!("{}.in", self.package),
+            input: self.input(),
             output: self.output(),
             metadata: meta,
             authorization: self.authorization.clone(),
@@ -392,31 +421,32 @@ pub fn compile_with_overrides(
             prost_reflect::Value::Message(m) => serde_json::to_value(m)?,
             _ => bail!("common.api must be a message"),
         })?;
-        if !api.meta.output.is_empty() {
+        for (option, value, local, runtime) in [
+            ("input", &api.meta.input, "in", true),
+            ("output", &api.meta.output, "out", true),
+            ("apidoc_in", &api.meta.apidoc_in, "apidoc_in", false),
+            ("apidoc_out", &api.meta.apidoc_out, "apidoc_out", false),
+        ] {
+            if value.is_empty() {
+                continue;
+            }
             let message = pool
-                .get_message_by_name(&api.meta.output)
-                .with_context(|| {
-                    format!("{}: unknown output message {}", api.source, api.meta.output)
-                })?;
+                .get_message_by_name(value)
+                .with_context(|| format!("{}: unknown {option} message {value}", api.source))?;
             ensure!(
-                message.parent_message().is_none()
-                    && message.parent_file().name().starts_with("common/"),
-                "{}: output must reference a top-level shared message in common/",
-                api.source
-            );
-            ensure!(
-                file.file_descriptor_proto()
-                    .dependency
-                    .iter()
-                    .any(|name| name == message.parent_file().name()),
-                "{}: import the file defining output {}",
+                message.parent_file().name().starts_with("common/")
+                    && (!runtime || message.parent_message().is_none()),
+                "{}: {option} must reference a {}shared message in common/",
                 api.source,
-                api.meta.output
+                if runtime { "top-level " } else { "" }
             );
+            ensure!(file.file_descriptor_proto().dependency.iter().any(|name| name == message.parent_file().name()),
+                "{}: {option}: \"{value}\" 引用了公共消息，但当前协议未导入其定义文件。\n请在此协议的 import 区域添加：\n  import \"{}\";\n仅在 {option} 字符串中填写类型名不会自动导入定义文件。",
+                api.source, message.parent_file().name());
             ensure!(
-                pool.get_message_by_name(&format!("{}.out", api.package))
+                pool.get_message_by_name(&format!("{}.{local}", api.package))
                     .is_none(),
-                "{}: output and local message out are mutually exclusive",
+                "{}: {option} and local message {local} are mutually exclusive",
                 api.source
             );
         }
@@ -576,8 +606,7 @@ pub fn compile_with_overrides(
     let pool = DescriptorPool::decode(descriptor.as_slice())?;
     for api in &endpoints {
         ensure!(
-            pool.get_message_by_name(&format!("{}.in", api.package))
-                .is_some()
+            pool.get_message_by_name(&api.input()).is_some()
                 && pool.get_message_by_name(&api.output()).is_some(),
             "{} requires in and out messages",
             api.source
