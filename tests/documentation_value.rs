@@ -50,6 +50,19 @@ const UNION: &str = r#"oneof value {
 }"#;
 
 #[test]
+fn native_json_fields_export_application_metadata_without_indexing_protobuf_internals() {
+    let (_temp, workspace) = fixture(UNION);
+    for php in [true, false] {
+        let fields = workspace_proto_gen::fields::struct_map(&workspace, php).unwrap();
+        let input = fields["demo.task__create.in"].as_array().unwrap();
+        assert!(input
+            .iter()
+            .any(|row| row[2] == "state" && row[1] == "google.protobuf.Value"));
+        assert!(fields.keys().all(|key| !key.starts_with("google.")));
+    }
+}
+
+#[test]
 fn native_json_union_has_named_choices_and_keeps_the_real_input_and_normal_oneofs() {
     let (_temp, workspace) = fixture(UNION);
     let doc = document(&workspace).unwrap();

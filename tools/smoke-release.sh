@@ -11,9 +11,10 @@ cat > "$SMOKE_DIR/proto/src/root/test__ping.proto" <<'PROTO'
 syntax = "proto3";
 import "common/api_options.proto";
 import "common/field_options.proto";
+import "google/protobuf/struct.proto";
 option (common.api) = { title: "release smoke" auth: PUBLIC };
 message in { optional int32 id = 1 [(common.field)={default:"10" examples:"10"}]; optional string title=2 [(common.field)={default:"" examples:"release smoke"}]; }
-message out { string result = 1; }
+message out { string result = 1; google.protobuf.Value value = 2; google.protobuf.Struct object = 3; google.protobuf.ListValue items = 4; }
 PROTO
 cat > "$SMOKE_DIR/proto/generator.toml" <<'CONFIG'
 version = 1

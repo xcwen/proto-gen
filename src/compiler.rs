@@ -11,6 +11,7 @@ use std::{
 
 pub const SCHEMA: &str = include_str!("../schema/common/api_options.proto");
 const DESCRIPTOR_SCHEMA: &str = include_str!("../include/google/protobuf/descriptor.proto");
+const STRUCT_SCHEMA: &str = include_str!("../include/google/protobuf/struct.proto");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -308,6 +309,10 @@ pub fn compile_with_overrides(
     fs::write(
         stage.path().join("google/protobuf/descriptor.proto"),
         DESCRIPTOR_SCHEMA,
+    )?;
+    fs::write(
+        stage.path().join("google/protobuf/struct.proto"),
+        STRUCT_SCHEMA,
     )?;
     fs::write(
         stage.path().join("common/field_options.proto"),

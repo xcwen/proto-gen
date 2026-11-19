@@ -256,6 +256,10 @@ pub fn struct_map(
     };
     for file in workspace.pool.files() {
         let f = file.file_descriptor_proto();
+        // Built-in protobuf messages have no application field metadata.
+        if f.name().starts_with("google/") {
+            continue;
+        }
         for (i, m) in f.message_type.iter().enumerate() {
             message(&mut map, f, m, m.name(), &[4, i as i32], php, &index)?;
         }
